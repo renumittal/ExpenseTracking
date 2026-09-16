@@ -304,12 +304,16 @@ class ExpenseTransaction(models.Model):
         if errors:
             raise ValidationError(errors)
 
-    def cancel(self, cancelled_by=None):
+    def cancel(self, cancelled_by=None, reason=None):
         """Never hard-delete a transaction; mark it CANCELLED instead (reversal)."""
         self.status = TransactionStatus.CANCELLED
+        update_fields = ['status', 'modified_by', 'modified_at']
         if cancelled_by is not None:
             self.modified_by = cancelled_by
-        self.save(update_fields=['status', 'modified_by', 'modified_at'])
+        if reason:
+            self.remarks = reason
+            update_fields.append('remarks')
+        self.save(update_fields=update_fields)
 
 
 # ---------------------------------------------------------------------------

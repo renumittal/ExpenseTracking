@@ -1,3 +1,4 @@
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
 from .models import (
@@ -32,6 +33,19 @@ class ExpenseTransactionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['status', 'created_by', 'created_at', 'modified_by', 'modified_at']
 
+    def validate(self, attrs):
+        """
+        Re-run the model's own consistency checks (expense_category vs. party_type,
+        and the required labour/contractor_contract/supplier FK for that party_type)
+        at the API layer -- ModelSerializer does not call model.clean() on its own.
+        """
+        instance = ExpenseTransaction(**attrs)
+        try:
+            instance.clean()
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError(getattr(exc, 'message_dict', exc.messages))
+        return attrs
+
 
 class ManagerFundSerializer(serializers.ModelSerializer):
     distributed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
@@ -55,6 +69,25 @@ class ManagerLabourDistributionSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_at', 'expense_transaction']
 
+    def validate(self, attrs):
+        manager_fund = attrs.get('manager_fund') or getattr(self.instance, 'manager_fund', None)
+        project = attrs.get('project') or getattr(self.instance, 'project', None)
+        manager = attrs.get('manager') or getattr(self.instance, 'manager', None)
+        amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+
+        if manager_fund and project and manager_fund.project_id != project.id:
+            raise serializers.ValidationError({'project': 'project must match the manager_fund\'s project.'})
+        if manager_fund and manager and manager_fund.manager_id != manager.id:
+            raise serializers.ValidationError({'manager': 'manager must match the manager_fund\'s manager.'})
+
+        # Hard block: this is an internal cash advance, not a client-facing
+        # contract, so (unlike ContractorContract) we never allow overdrawing it.
+        if manager_fund and amount is not None and amount > manager_fund.balance:
+            raise serializers.ValidationError(
+                f'Distribution amount {amount} exceeds available fund balance {manager_fund.balance}.'
+            )
+        return attrs
+
 
 class SupplierSerializer(serializers.ModelSerializer):
     class Meta:
@@ -70,11 +103,20 @@ class ContractorSerializer(serializers.ModelSerializer):
 
 class ContractorContractSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    balance_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, source='balance')
+    overpayment_warning = serializers.SerializerMethodField()
 
     class Meta:
         model = ContractorContract
         fields = [
             'id', 'project', 'contractor', 'contract_date', 'contract_amount',
-            'remarks', 'paid_amount', 'balance',
+            'remarks', 'paid_amount', 'balance_amount', 'overpayment_warning',
         ]
+
+    def get_overpayment_warning(self, obj):
+        if obj.paid_amount > obj.contract_amount:
+            return (
+                f'paid_amount ({obj.paid_amount}) exceeds contract_amount ({obj.contract_amount}) '
+                f'by {obj.paid_amount - obj.contract_amount}.'
+            )
+        return None

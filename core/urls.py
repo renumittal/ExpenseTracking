@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from . import views
+from . import reports, views
 
 router = DefaultRouter()
 router.register('projects', views.ProjectViewSet, basename='project')
@@ -15,5 +15,15 @@ urlpatterns = [
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
     path('manager-summary/', views.ManagerSummaryView.as_view(), name='manager-summary'),
+
+    path('reports/category-expense/', reports.CategoryExpenseReportView.as_view(), name='report-category-expense'),
+    path('reports/contractor/', reports.ContractorReportView.as_view(), name='report-contractor'),
+    path('reports/supplier/', reports.SupplierReportView.as_view(), name='report-supplier'),
+    path('reports/labour/', reports.LabourReportView.as_view(), name='report-labour'),
+    path('reports/misc/', reports.MiscExpenseReportView.as_view(), name='report-misc'),
+    path('reports/manager-fund/', reports.ManagerFundReportView.as_view(), name='report-manager-fund'),
+    path('reports/date-wise/', reports.DateWiseExpenseReportView.as_view(), name='report-date-wise'),
+    path('reports/payment-register/', reports.PaymentRegisterView.as_view(), name='report-payment-register'),
+
     path('', include(router.urls)),
 ]
