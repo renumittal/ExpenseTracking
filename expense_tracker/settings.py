@@ -6,21 +6,34 @@ from pathlib import Path
 
 import dj_database_url
 from decouple import Csv, config
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config(
-    'DJANGO_SECRET_KEY',
-    default='django-insecure-2cix$jmukso0_0nh#0@6zce8o7d(7r+u1g60k9-1x*z3#ik=l-',
-)
-
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = config('DJANGO_DEBUG', default=True, cast=bool)
+# Secure by default: DEBUG is off unless DJANGO_DEBUG=True is set (local .env does this).
+DEBUG = config('DJANGO_DEBUG', default=False, cast=bool)
+
+# SECURITY WARNING: keep the secret key used in production secret!
+# Only local development (DEBUG) may fall back to a throwaway key; production must set it.
+if DEBUG:
+    SECRET_KEY = config('DJANGO_SECRET_KEY', default='django-insecure-local-development-only')
+else:
+    SECRET_KEY = config('DJANGO_SECRET_KEY', default='')
+    if not SECRET_KEY:
+        raise ImproperlyConfigured('Set the DJANGO_SECRET_KEY environment variable.')
 
 ALLOWED_HOSTS = config('DJANGO_ALLOWED_HOSTS', default='127.0.0.1,localhost', cast=Csv())
+
+# The web app (GitHub Pages) calls this API from another origin. An origin is scheme + host
+# only, with no path: https://renumittal.github.io (not .../ExpenseTracking/).
+# Login uses a token in the Authorization header, not cookies, so no credentials are needed.
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', default='https://renumittal.github.io', cast=Csv())
+
+# Only needed for the /admin/ login over https on the hosting domain, e.g. https://myapp.onrender.com
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', default='', cast=Csv())
 
 
 # Application definition
@@ -32,6 +45,7 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
+    'corsheaders',
     'rest_framework',
     'rest_framework.authtoken',
     'core',
@@ -49,6 +63,8 @@ REST_FRAMEWORK = {
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',  # serves the admin's CSS/JS in production
+    'corsheaders.middleware.CorsMiddleware',  # must come before CommonMiddleware
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -98,9 +114,14 @@ if DATABASE_URL:
         'default': dj_database_url.parse(
             DATABASE_URL,
             conn_max_age=600,
+            conn_health_checks=True,  # reconnect if Supabase dropped an idle connection
+            disable_server_side_cursors=True,  # required by Supabase's transaction pooler (port 6543)
             ssl_require=True,
         )
     }
+elif not DEBUG:
+    # A hosted server's disk is wiped on restart; never silently use a throwaway SQLite file.
+    raise ImproperlyConfigured('Set the DATABASE_URL environment variable (Supabase connection string).')
 else:
     DATABASES = {
         'default': {
@@ -145,6 +166,19 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # `manage.py collectstatic` writes here (admin CSS/JS)
+STORAGES = {
+    'default': {'BACKEND': 'django.core.files.storage.FileSystemStorage'},
+    'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
+}
+
+# Production-only security settings (the host terminates https and forwards the request).
+if not DEBUG:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SECURE_HSTS_SECONDS = config('DJANGO_HSTS_SECONDS', default=3600, cast=int)  # raise once stable
+    SECURE_CONTENT_TYPE_NOSNIFF = True
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field

@@ -9,11 +9,13 @@ router.register('expense-transactions', views.ExpenseTransactionViewSet, basenam
 router.register('manager-funds', views.ManagerFundViewSet, basename='managerfund')
 router.register('manager-labour-distributions', views.ManagerLabourDistributionViewSet, basename='managerlabourdistribution')
 router.register('suppliers', views.SupplierViewSet, basename='supplier')
+router.register('labour', views.LabourViewSet, basename='labour')
 router.register('contractor-contracts', views.ContractorContractViewSet, basename='contractorcontract')
 
 urlpatterns = [
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('me/', views.MeView.as_view(), name='me'),
     path('manager-summary/', views.ManagerSummaryView.as_view(), name='manager-summary'),
 
     path('reports/category-expense/', reports.CategoryExpenseReportView.as_view(), name='report-category-expense'),

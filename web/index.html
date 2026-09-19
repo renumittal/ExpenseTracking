@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="hi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1f4fa3">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Expense">
+  <title>Expense Tracking</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar" id="topbar" hidden>
+    <a class="back" id="backBtn" href="#/home">← वापस <small>BACK</small></a>
+  </header>
+
+  <main id="view" aria-live="polite"></main>
+
+  <nav class="tabs" id="tabs" hidden aria-label="मुख्य मेन्यू">
+    <a href="#/home" data-tab="home"><span>🏠</span>होम</a>
+    <a href="#/add" data-tab="add"><span>➕</span>खर्च डालें</a>
+    <a href="#/list" data-tab="list"><span>📋</span>खर्च देखें</a>
+    <a href="#/reports" data-tab="reports"><span>📊</span>हिसाब</a>
+  </nav>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

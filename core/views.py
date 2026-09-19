@@ -12,6 +12,7 @@ from .models import (
     ContractorContract,
     ExpenseCategory,
     ExpenseTransaction,
+    Labour,
     ManagerFund,
     ManagerLabourDistribution,
     Project,
@@ -24,6 +25,7 @@ from .permissions import RoleAllowed, get_role, is_admin
 from .serializers import (
     ContractorContractSerializer,
     ExpenseTransactionSerializer,
+    LabourSerializer,
     ManagerFundSerializer,
     ManagerLabourDistributionSerializer,
     ProjectSerializer,
@@ -60,6 +62,22 @@ class LogoutView(APIView):
     def post(self, request):
         Token.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class MeView(APIView):
+    """GET (authenticated) -> who is logged in and their owner id (needed as `paid_by_owner`)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        owner = getattr(user, 'owner_profile', None)
+        return Response({
+            'username': user.username,
+            'role': get_role(user),
+            'owner_id': owner.id if owner else None,
+            'name': owner.name if owner else user.get_username(),
+        })
 
 
 # ---------------------------------------------------------------------------
@@ -328,11 +346,24 @@ class ManagerSummaryView(APIView):
 # Reference data (owner read access scoped to their own projects, admin full)
 # ---------------------------------------------------------------------------
 
-class SupplierViewSet(viewsets.ReadOnlyModelViewSet):
+class SupplierViewSet(viewsets.ModelViewSet):
+    """List + add only (owners can add a new supplier by name while entering an expense)."""
+
     serializer_class = SupplierSerializer
     permission_classes = [RoleAllowed]
     allowed_roles = {Role.OWNER}
     queryset = Supplier.objects.all()
+    http_method_names = ['get', 'post', 'head', 'options']
+
+
+class LabourViewSet(viewsets.ModelViewSet):
+    """List + add only (owners can add a new labour by name while entering an expense)."""
+
+    serializer_class = LabourSerializer
+    permission_classes = [RoleAllowed]
+    allowed_roles = {Role.OWNER}
+    queryset = Labour.objects.all()
+    http_method_names = ['get', 'post', 'head', 'options']
 
 
 class ContractorContractViewSet(viewsets.ModelViewSet):

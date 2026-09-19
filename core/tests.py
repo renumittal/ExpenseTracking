@@ -497,3 +497,45 @@ class ReportingTests(APITestCase):
         self.auth_as(other_owner_user)
         response = self.client.get(f'/api/projects/{self.project.id}/dashboard/')
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class SimpleFrontendSupportTests(APITestCase):
+    """Small endpoints the mobile-first web UI relies on."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Home Build', code='HB')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        self.owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        Project.objects.create(name='Other', code='OT')
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+
+    def test_me_returns_owner_id(self):
+        data = self.client.get('/api/me/').data
+        self.assertEqual(data['owner_id'], self.owner.id)
+        self.assertEqual(data['name'], 'Ramesh')
+
+    def test_owner_can_add_labour_and_supplier_by_name(self):
+        self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 201)
+        self.assertEqual(self.client.post('/api/suppliers/', {'name': 'Sharma Bricks'}).status_code, 201)
+        self.assertEqual(len(self.client.get('/api/labour/').data), 1)
+
+    def test_labour_cannot_be_edited_or_deleted(self):
+        labour = Labour.objects.create(name='Mohan')
+        self.assertEqual(self.client.delete(f'/api/labour/{labour.id}/').status_code, 405)
+
+    def test_contract_shows_contractor_name(self):
+        contractor = Contractor.objects.create(name='Suresh')
+        ContractorContract.objects.create(
+            project=self.project, contractor=contractor, contract_date='2026-01-01', contract_amount='1000')
+        rows = self.client.get('/api/contractor-contracts/').data
+        self.assertEqual(rows[0]['contractor_name'], 'Suresh')
+
+
+class HealthCheckTests(APITestCase):
+    def test_health_needs_no_login_and_no_database(self):
+        with self.assertNumQueries(0):
+            response = self.client.get('/health/')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'status': 'ok'})

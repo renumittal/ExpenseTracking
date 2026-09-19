@@ -5,6 +5,7 @@ from .models import (
     Contractor,
     ContractorContract,
     ExpenseTransaction,
+    Labour,
     ManagerFund,
     ManagerLabourDistribution,
     Project,
@@ -95,6 +96,12 @@ class SupplierSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'supplier_type', 'mobile', 'address', 'remarks']
 
 
+class LabourSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Labour
+        fields = ['id', 'name', 'type', 'mobile']
+
+
 class ContractorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Contractor
@@ -105,11 +112,12 @@ class ContractorContractSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     balance_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, source='balance')
     overpayment_warning = serializers.SerializerMethodField()
+    contractor_name = serializers.CharField(source='contractor.name', read_only=True)
 
     class Meta:
         model = ContractorContract
         fields = [
-            'id', 'project', 'contractor', 'contract_date', 'contract_amount',
+            'id', 'project', 'contractor', 'contractor_name', 'contract_date', 'contract_amount',
             'remarks', 'paid_amount', 'balance_amount', 'overpayment_warning',
         ]
 

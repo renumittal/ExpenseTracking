@@ -53,3 +53,13 @@ Admin panel: http://127.0.0.1:8000/admin/
   (category=LABOUR) so the spend rolls into Labour Expense totals exactly once.
   See the docstring on `ManagerLabourDistribution` in `core/models.py` for why
   `ManagerFund` itself must never be counted as a separate expense.
+
+## Deployment (Render + GitHub Pages)
+
+- **API**: Django on Render, configured by `render.yaml` (build/start commands, health check `/health/`).
+  Python version is in `.python-version`. Migrations are run manually, never on deploy.
+- **Web app**: the `web/` folder on GitHub Pages. After the API is live, set `apiBase` in `web/config.js`
+  to `https://<render-service-name>.onrender.com/api/`.
+- **Secrets** live only in Render's environment variables — never in Git. See `.env.example` for the list.
+- Use Supabase's **pooler** connection string (port 6543) on Render; the direct `db.<ref>.supabase.co`
+  host is IPv6-only and Render cannot reach it.

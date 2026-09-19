@@ -1,0 +1,26 @@
+# Render Blueprint for the Django API. No secret values belong in this file:
+# variables marked `sync: false` are typed into the Render dashboard, never stored in GitHub.
+services:
+  - type: web
+    name: expense-tracking-api   # decides the URL: https://<name>.onrender.com (Render adds a suffix if taken)
+    runtime: python              # Python version comes from .python-version
+    region: singapore            # keep the same region as the Supabase project (can't be changed later)
+    plan: free
+    buildCommand: pip install -r requirements.txt && python manage.py collectstatic --noinput
+    startCommand: gunicorn expense_tracker.wsgi
+    healthCheckPath: /health/
+    autoDeployTrigger: commit
+    # Migrations are NOT run here: the Supabase database is already migrated.
+    envVars:
+      - key: DJANGO_SECRET_KEY
+        generateValue: true      # Render creates a random secret; it is never shown in GitHub
+      - key: DJANGO_DEBUG
+        value: "False"
+      - key: DATABASE_URL
+        sync: false              # Supabase POOLER string (port 6543) -- paste in the dashboard
+      - key: DJANGO_ALLOWED_HOSTS
+        sync: false              # e.g. <service-name>.onrender.com (no https://)
+      - key: CSRF_TRUSTED_ORIGINS
+        sync: false              # e.g. https://<service-name>.onrender.com
+      - key: CORS_ALLOWED_ORIGINS
+        value: https://renumittal.github.io
