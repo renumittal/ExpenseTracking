@@ -17,18 +17,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import include, path
 from django.conf import settings
-from django.http import JsonResponse
 from django.shortcuts import redirect
 from django.views.static import serve
 from django.urls import re_path
 
-def health(request):
-    """Render's health check: no login, no database access -- only proves Django is running."""
-    return JsonResponse({'status': 'ok'})
-
-
 urlpatterns = [
-    path('health/', health, name='health'),
     # The web app lives in web/ and uses only relative paths, so it also works when hosted
     # under /ExpenseTracking/ (GitHub Pages). Serve it at that same path locally.
     path('', lambda request: redirect('/ExpenseTracking/')),

@@ -62,6 +62,7 @@ REST_FRAMEWORK = {
 }
 
 MIDDLEWARE = [
+    'expense_tracker.middleware.HealthCheckMiddleware',  # /health/ only; must stay first
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',  # serves the admin's CSS/JS in production
     'corsheaders.middleware.CorsMiddleware',  # must come before CommonMiddleware
