@@ -22,6 +22,7 @@
   const OPS = [R.SUPER_ADMIN, R.OWNER, R.MANAGER];   // day-to-day entry
   const OWN = [R.SUPER_ADMIN, R.OWNER];              // management of a project
   const ADM = [R.SUPER_ADMIN];                       // application level
+  const NOT_MANAGER = [R.SUPER_ADMIN, R.OWNER, R.VIEWER];
   const SA_ON = { super_admin: true };
   const GROUPS = [
     { id: 'view',     label: 'View / Dekhna' },
@@ -31,8 +32,8 @@
     { id: 'personal', label: 'Personal' },
   ];
   const DEFINITIONS = [
-    { key: 'canViewProjects',      group: 'view', label: 'View Projects',    roles: ALL, fixed: SA_ON },
-    { key: 'canViewExpenses',      group: 'view', label: 'View Expenses',    roles: ALL },
+    { key: 'canViewProjects',      group: 'view', label: 'View Projects',    roles: NOT_MANAGER, fixed: SA_ON },
+    { key: 'canViewExpenses',      group: 'view', label: 'View Expenses',    roles: NOT_MANAGER },
     { key: 'canViewLabour',        group: 'view', label: 'View Labour',      roles: ALL },
     { key: 'canViewReports',       group: 'view', label: 'View Reports',     roles: ALL },
     { key: 'canViewSuppliers',     group: 'view', label: 'View Suppliers',   roles: OWN },
@@ -99,11 +100,10 @@
   const resetMatrix = () => saveMatrix(DEFAULT);
 
   // ---------- which screen needs which permission (array = any of; no entry = any logged-in user) ----------
-  const ADD_ANY = ['canAddExpense', 'canRecordLabourPayment'];
   const SETTINGS_ANY = ['canManageProjectSettings', 'canManageApplicationSettings', 'canManagePermissions'];
-  const REPORT_PERMISSION = { LABOUR: 'canViewLabour', SUPPLIER: 'canViewSuppliers', CONTRACTOR: 'canViewContractors' };
+  const REPORT_PERMISSION = { LABOUR: 'canViewLabour', SUPPLIER: 'canViewSuppliers', CONTRACTOR: 'canViewContractors', MISCELLANEOUS: 'canViewExpenses' };
   const ROUTE_PERMISSION = {
-    add: ADD_ANY, done: ADD_ANY,
+    add: canEnterAny, done: canEnterAny,
     list: 'canViewExpenses',
     reports: 'canViewReports',
     project: 'canViewProjects', newproject: 'canCreateProject',
@@ -111,14 +111,17 @@
     permissions: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
   };
   const reportPermission = key => REPORT_PERMISSION[key] || 'canViewReports';
-  // Expense categories: a category is visible only if its view permission is on (Miscellaneous has none),
+  const CATEGORIES = ['LABOUR', 'CONTRACTOR', 'SUPPLIER', 'MISCELLANEOUS'];
+  // Expense categories: a category is visible only if its view permission is on,
   // and you can enter one only if you may also add it. Used by Add Expense, the Expenses list and Reports.
-  const canViewCategory = (can, key) => !REPORT_PERMISSION[key] || can(REPORT_PERMISSION[key]);
+  const canViewCategory = (can, key) => can(reportPermission(key));
+  // The Add screen (expense / labour-payment entry) is available only if some category can be entered.
+  function canEnterAny(can) { return CATEGORIES.some(k => canAddCategory(can, k)); }
   const canAddCategory = (can, key) => canViewCategory(can, key) && can(key === 'LABOUR' ? 'canRecordLabourPayment' : 'canAddExpense');
   // Menu. `primary` items sit in the bottom bar; the rest go under "Menu".
   const NAV = [
     { id: 'home',        hash: '#/home',          icon: '🏠', hi: 'होम',       en: 'Dashboard',   perm: null, primary: true },
-    { id: 'add',         hash: '#/add',           icon: '➕', hi: 'खर्च डालें', en: 'Add Expense', perm: ADD_ANY, primary: true },
+    { id: 'add',         hash: '#/add',           icon: '➕', hi: 'खर्च डालें', en: 'Add Expense', perm: canEnterAny, primary: true },
     { id: 'list',        hash: '#/list',          icon: '📋', hi: 'खर्च देखें', en: 'Expenses',    perm: 'canViewExpenses', primary: true },
     { id: 'reports',     hash: '#/reports',       icon: '📊', hi: 'हिसाब',     en: 'Reports',     perm: 'canViewReports', primary: true },
     { id: 'project',     hash: '#/project',       icon: '🏗️', hi: 'प्रोजेक्ट',  en: 'Projects',    perm: 'canViewProjects' },
@@ -191,9 +194,10 @@
     return !!role && current[perm][role];
   }
 
-  const navFor = can => NAV.filter(n => !n.perm || [].concat(n.perm).some(can));
+  const allows = (perm, can) => (typeof perm === 'function' ? perm(can) : [].concat(perm).some(can));   // one permission, any-of list, or a rule
+  const navFor = can => NAV.filter(n => !n.perm || allows(n.perm, can));
   const routePermission = (page, arg) => (page === 'report' ? reportPermission(arg) : ROUTE_PERMISSION[page] || null);
 
   window.Authz = { ROLES: R, ROLE_LIST, ROLE_LABEL, GROUPS, DEFINITIONS, DEMO_USERS, demoUser, buildUser, directory, roleIn, can, navFor,
-    routePermission, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, saveMatrix, resetMatrix, isFixed, isDefault };
+    routePermission, allows, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, saveMatrix, resetMatrix, isFixed, isDefault };
 })();

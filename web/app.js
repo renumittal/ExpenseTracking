@@ -55,7 +55,7 @@
   const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
   // The one permission check used everywhere: can('canAddExpense'). Role names live only in authz.js.
   const can = perm => Authz.can(state.user, state.project && state.project.id, perm);
-  const canAny = perms => [].concat(perms).some(can);            // a screen may accept any of several permissions
+  const canAny = perms => Authz.allows(perms, can);               // a screen may need one permission, any of several, or a rule
   const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
   const noProject = () => can('canCreateProject')
     ? `<div class="empty"><div class="ico">🏠</div><h2>अभी कोई प्रोजेक्ट नहीं है</h2><p>No projects exist yet.</p></div><a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>`
@@ -314,7 +314,7 @@
     $view.innerHTML = `
       <h1>➕ खर्च डालें <small>Add Expense</small></h1>
       <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
-      ${state.projects.length > 1 ? '<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 प्रोजेक्ट बदलें <span class="sub">Change Project</span></a>' : ''}
+      ${state.projects.length > 1 && can('canViewProjects') ? '<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 प्रोजेक्ट बदलें <span class="sub">Change Project</span></a>' : ''}
       <div id="top"></div>
       <div class="step" id="s-cat"><div class="q"><span class="num">1</span>किस चीज़ का खर्च है?</div>
         <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${c.hi}<br><small>${c.en}</small></button>`).join('')}</div>
@@ -944,7 +944,7 @@
       <div class="success"><div class="tick">✅</div><h1>${MSG.saved}</h1>
         ${info ? `<div class="card"><div class="amount">${money(info.amount)}</div><div class="muted">${esc(info.who)}</div></div>` : ''}</div>
       <a class="btn green big" href="#/add">➕ एक और खर्च डालें <span class="sub">Add Another</span></a>
-      <a class="btn line" href="#/list">📋 खर्च देखें <span class="sub">View Expenses</span></a>
+      ${can('canViewExpenses') ? '<a class="btn line" href="#/list">📋 खर्च देखें <span class="sub">View Expenses</span></a>' : ''}
       <a class="btn line" href="#/home">🏠 होम पर जाएँ <span class="sub">Home</span></a>`;
   }
 
@@ -1010,7 +1010,10 @@
     loading();
     let d;
     try { d = await api(`projects/${state.project.id}/dashboard/`); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
-    const total = Number(d.total_expense);
+    const cats = viewableCats();
+    const all = cats.length === CATS.length;
+    // Everything on this screen is limited to the categories you may view.
+    const total = all ? Number(d.total_expense) : cats.reduce((sum, c) => sum + Number(d.category_breakup[c.key] || 0), 0);
     const pct = v => (total > 0 ? Math.round((Number(v) / total) * 100) : 0);
 
     $view.innerHTML = `
@@ -1018,16 +1021,16 @@
       <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
       <div class="card"><div class="muted">कुल खर्च <small>Total Expense</small></div><div class="big-total">${money(total)}</div></div>
       <h2>किस पर कितना खर्च हुआ</h2>
-      ${viewableCats().map(c => { const link = can(Authz.reportPermission(c.key)); return `
+      ${cats.map(c => { const link = can(Authz.reportPermission(c.key)); return `
         <${link ? `a href="#/report/${c.key}"` : 'div'} class="card">
           <div class="row"><b>${c.icon} ${c.hi} <small>${c.en}</small></b><span class="amount">${money(d.category_breakup[c.key])}</span></div>
           <div class="bar"><i style="width:${pct(d.category_breakup[c.key])}%"></i></div>
           <div class="muted" style="margin-top:6px">${pct(d.category_breakup[c.key])}%${link ? ' · देखने के लिए छूइए ›' : ''}</div>
         </${link ? 'a' : 'div'}>`; }).join('')}
-      ${d.owner_contribution.length ? `<h2>मालिक का हिस्सा <small>Owner Share</small></h2>` + d.owner_contribution.map(o => `
+      ${all && d.owner_contribution.length ? `<h2>मालिक का हिस्सा <small>Owner Share</small></h2>` + d.owner_contribution.map(o => `
         <div class="card"><div class="row"><b>${esc(o.owner_name)}</b><span class="amount">${money(o.total)}</span></div>
         <div class="muted">कुल खर्च का ${pct(o.total)}% दिया</div></div>`).join('') : ''}
-      ${d.contractor_positions.length ? `<h2>ठेकेदार का हिसाब</h2>` + d.contractor_positions.map(c => {
+      ${can('canViewContractors') && d.contractor_positions.length ? `<h2>ठेकेदार का हिसाब</h2>` + d.contractor_positions.map(c => {
         const bal = Number(c.balance);
         return `<div class="card"><b>${esc(c.contractor_name)}</b>
           ${c.work_description ? `<div class="muted">${esc(c.work_description)}</div>` : ''}
@@ -1066,7 +1069,7 @@
         <div class="card"><div class="muted">कुल खर्च <small>Total</small></div><div class="big-total">${money(total)}</div></div>` +
         (rows.length ? rows.map(row => `<div class="card">${key === 'CONTRACTOR' ? row : `<div class="row"><b>${esc(row[0])}</b><span class="amount">${money(row[1])}</span></div>`}</div>`).join('')
           : '<div class="empty"><div class="ico">📭</div>अभी कोई खर्च नहीं है.</div>') +
-        `<a class="btn line" href="#/list?cat=${key}">📋 सारे खर्च देखें <span class="sub">View all</span></a>`;
+        (can('canViewExpenses') ? `<a class="btn line" href="#/list?cat=${key}">📋 सारे खर्च देखें <span class="sub">View all</span></a>` : '');
     } catch (e) { $view.innerHTML = errBox(friendly(e)); }
   }
 

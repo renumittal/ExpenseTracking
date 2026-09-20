@@ -10,5 +10,5 @@ window.APP_CONFIG = {
   apiBase: 'https://expense-tracking-api-0wso.onrender.com/api/',
   // Phase 1 testing only: shows a "Test as" switcher (owner/manager/viewer/... @test.com) in the header.
   // It only changes what the UI shows, not what the server allows. Set to false for real use.
-  demoRoles: true,
+  demoRoles: false,
 };
