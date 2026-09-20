@@ -6,4 +6,4 @@
    - Must be the full address and end with a slash.
    - Leave it empty ('') only when the API and this page come from the same server
      (local development): the app then uses "../api/" automatically. */
-window.APP_CONFIG = { apiBase: '' };
+window.APP_CONFIG = { apiBase: 'https://expense-tracking-api-0wso.onrender.com/api/' };
