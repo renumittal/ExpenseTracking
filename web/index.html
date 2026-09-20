@@ -14,20 +14,18 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <header class="userbar" id="userbar" hidden></header>
   <header class="topbar" id="topbar" hidden>
     <a class="back" id="backBtn" href="#/home">← वापस <small>BACK</small></a>
   </header>
 
   <main id="view" aria-live="polite"></main>
 
-  <nav class="tabs" id="tabs" hidden aria-label="मुख्य मेन्यू">
-    <a href="#/home" data-tab="home"><span>🏠</span>होम</a>
-    <a href="#/add" data-tab="add"><span>➕</span>खर्च डालें</a>
-    <a href="#/list" data-tab="list"><span>📋</span>खर्च देखें</a>
-    <a href="#/reports" data-tab="reports"><span>📊</span>हिसाब</a>
-  </nav>
+  <div class="menu-sheet" id="menuSheet" hidden></div>
+  <nav class="tabs" id="tabs" hidden aria-label="मुख्य मेन्यू"></nav>
 
   <script src="config.js"></script>
+  <script src="authz.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

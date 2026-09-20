@@ -51,7 +51,15 @@
   const shortDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${String(d).padStart(2, '0')}-${EN_MONTHS[m - 1]}-${y}` : ''; };
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
 
-  const state = { token: store.get('token'), me: null, projects: [], project: null, names: null };
+  const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser') };
+  const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
+  // The one permission check used everywhere: can('canAddExpense'). Role names live only in authz.js.
+  const can = perm => Authz.can(state.user, state.project && state.project.id, perm);
+  const canAny = perms => [].concat(perms).some(can);            // a screen may accept any of several permissions
+  const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
+  const noProject = () => can('canCreateProject')
+    ? `<div class="empty"><div class="ico">🏠</div><h2>अभी कोई प्रोजेक्ट नहीं है</h2><p>No projects exist yet.</p></div><a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>`
+    : '<div class="empty"><div class="ico">🏠</div><h2>आपको अभी कोई प्रोजेक्ट नहीं दिया गया है</h2><p>कृपया एडमिन से संपर्क करें.<br>No projects have been assigned to you yet.<br>Please contact the administrator.</p></div>';
 
   class AppError extends Error {
     constructor(kind, status, data) { super(kind); this.kind = kind; this.status = status; this.data = data; }
@@ -98,8 +106,8 @@
   const loading = () => { $view.innerHTML = '<div class="spinner">⏳ रुकिए...</div>'; };
 
   function logoutLocal() {
-    store.del('token'); store.del('projectId');
-    Object.assign(state, { token: null, me: null, projects: [], project: null, names: null });
+    store.del('token'); store.del('projectId'); store.del('demoUser');
+    Object.assign(state, { token: null, me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: null });
   }
 
   // ---------- data loading ----------
@@ -108,9 +116,41 @@
     const me = await api('me/');
     const projects = me.owner_id ? await api('projects/') : [];
     state.me = me;
-    state.projects = projects.results || projects;
+    state.realProjects = projects.results || projects;
+    applyUser();
+  }
+
+  // Build the current user and keep only the projects assigned to them.
+  function applyUser() {
+    const demo = DEMO ? Authz.demoUser(state.demoId) : null;
+    state.user = Authz.buildUser({ me: state.me, projects: state.realProjects, demo });
+    const mine = new Set(state.user.assignedProjects.map(a => a.projectId));
+    state.projects = state.realProjects.filter(p => mine.has(p.id));
     const saved = Number(store.get('projectId'));
     state.project = state.projects.find(p => p.id === saved) || state.projects[0] || null;
+    state.names = null;
+  }
+
+  // ---------- profile bar ----------
+  function renderUserbar(show) {
+    const bar = document.getElementById('userbar');
+    bar.hidden = !(show && state.user);
+    if (bar.hidden) return;
+    const role = (state.project && Authz.roleIn(state.user, state.project.id)) || state.user.role;
+    bar.innerHTML = `
+      <div class="who"><b>${esc(state.user.name)}</b><span class="role">${role ? esc(Authz.ROLE_LABEL[role]) : 'NO ROLE'}</span></div>
+      ${can('canChangeOwnPassword') ? '<a class="out" href="#/profile">🔑 Change Password</a>' : ''}
+      <button type="button" class="out" id="logoutBtn">🚪 Logout</button>
+      ${DEMO ? `<label class="demo">Test as
+        <select id="demoSel" aria-label="Test user"><option value="">Real login</option>${Authz.DEMO_USERS.map(u => `<option value="${u.id}" ${u.id === state.demoId ? 'selected' : ''}>${esc(u.email)}</option>`).join('')}</select></label>` : ''}`;
+    document.getElementById('logoutBtn').onclick = doLogout;
+    const sel = document.getElementById('demoSel');
+    if (sel) sel.onchange = () => {
+      state.demoId = sel.value || null;
+      if (state.demoId) store.set('demoUser', state.demoId); else store.del('demoUser');
+      applyUser();
+      if (location.hash === '#/home' || !location.hash) route(); else location.hash = '#/home';
+    };
   }
 
   // Names for turning ids into words (labour / suppliers / contractors of this project).
@@ -126,7 +166,23 @@
   // ---------- chrome (back button, tabs) ----------
   function chrome(tab, back) {
     const loggedIn = !!state.token && tab !== 'login';
-    document.getElementById('tabs').hidden = !(loggedIn && tab !== 'home' && tab !== 'blocked');
+    $view.onclick = null;   // a screen may attach a delegated click handler
+    renderUserbar(loggedIn);
+    const nav = document.getElementById('tabs');
+    const items = loggedIn && state.user ? Authz.navFor(can) : [];
+    const more = items.filter(n => !n.primary);
+    nav.innerHTML = items.filter(n => n.primary).map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${n.hi}</a>`).join('')
+      + (more.length ? `<button type="button" id="menuBtn" data-tab="menu" aria-expanded="false"><span>☰</span>मेन्यू</button>` : '');
+    const sheet = document.getElementById('menuSheet');
+    sheet.hidden = true;
+    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${n.hi} <small>${n.en}</small></a>`).join('');
+    const menuBtn = document.getElementById('menuBtn');
+    if (menuBtn) {
+      menuBtn.onclick = () => { sheet.hidden = !sheet.hidden; menuBtn.setAttribute('aria-expanded', String(!sheet.hidden)); };
+      menuBtn.classList.toggle('on', more.some(n => n.id === tab));
+    }
+    sheet.querySelectorAll('a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
+    document.getElementById('tabs').hidden = !(loggedIn && tab !== 'blocked' && items.length);
     document.body.classList.toggle('no-tabs', document.getElementById('tabs').hidden);
     const top = document.getElementById('topbar');
     top.hidden = !back;
@@ -135,7 +191,17 @@
     window.scrollTo(0, 0);
   }
 
+  // Labour payments and other expenses are separate permissions.
+  const allowedCats = () => CATS.filter(c => Authz.canAddCategory(can, c.key));
+  const viewableCats = () => CATS.filter(c => Authz.canViewCategory(can, c.key));
+
   // ---------- screens ----------
+  function screenNoAccess() {
+    chrome('noaccess', '#/home');
+    $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>इस पेज की अनुमति नहीं है</h2><p>You do not have access to this page.</p></div>
+      <a class="btn line" href="#/home">🏠 होम पर जाएँ <span class="sub">Home</span></a>`;
+  }
+
   function screenLogin() {
     chrome('login');
     $view.innerHTML = `
@@ -185,6 +251,8 @@
   }
 
   async function doLogout() {
+    if (permDirty() && !confirm('You have unsaved permission changes. Log out without saving?')) return;
+    permDraft = null;
     try { await api('auth/logout/', { method: 'POST' }); } catch (e) { /* still log out on this phone */ }
     logoutLocal();
     location.hash = '#/login';
@@ -194,34 +262,35 @@
     chrome('home');
     const proj = state.project;
     $view.innerHTML = `
-      <h1>नमस्ते, ${esc(state.me.name)} 🙏</h1>
-      <p class="muted">${proj ? 'प्रोजेक्ट: <b>' + esc(proj.name) + '</b>' : 'अभी कोई प्रोजेक्ट नहीं जुड़ा है.'}</p>
+      <h1>नमस्ते, ${esc(state.user.name)} 🙏</h1>
+      ${proj ? '<p class="muted">प्रोजेक्ट: <b>' + esc(proj.name) + '</b></p>' : noProject()}
       <div class="home-grid">
-        <a class="btn green big" href="#/add"><span class="ico">➕</span><span>खर्च डालें<span class="sub">Add Expense</span></span></a>
-        <a class="btn big" href="#/list"><span class="ico">📋</span><span>खर्च देखें<span class="sub">View Expenses</span></span></a>
-        <a class="btn big" href="#/project"><span class="ico">🏠</span><span>मेरा प्रोजेक्ट<span class="sub">My Project</span></span></a>
-        <a class="btn big" href="#/reports"><span class="ico">📊</span><span>हिसाब देखें<span class="sub">Total Expense</span></span></a>
-      </div>
-      <button class="btn line" id="out" style="margin-top:28px">🚪 बाहर निकलें <span class="sub">LOGOUT</span></button>`;
-    document.getElementById('out').onclick = doLogout;
+        ${canAdd() ? '<a class="btn green big" href="#/add"><span class="ico">➕</span><span>खर्च डालें<span class="sub">Add Expense</span></span></a>' : ''}
+        ${can('canViewExpenses') ? '<a class="btn big" href="#/list"><span class="ico">📋</span><span>खर्च देखें<span class="sub">View Expenses</span></span></a>' : ''}
+        ${can('canViewProjects') ? '<a class="btn big" href="#/project"><span class="ico">🏠</span><span>मेरा प्रोजेक्ट<span class="sub">My Project</span></span></a>' : ''}
+        ${can('canViewReports') ? '<a class="btn big" href="#/reports"><span class="ico">📊</span><span>हिसाब देखें<span class="sub">Total Expense</span></span></a>' : ''}
+      </div>`;
   }
 
   async function screenProject() {
-    chrome('home', '#/home');
+    chrome('project', '#/home');
     loading();
     try {
       const totals = await Promise.all(state.projects.map(p => api(`projects/${p.id}/summary/`).catch(() => null)));
+      if (!state.projects.length) { $view.innerHTML = noProject(); return; }
       const many = state.projects.length > 1;
-      $view.innerHTML = `<h1>🏠 मेरा प्रोजेक्ट <small>My Project</small></h1>` +
+      $view.innerHTML = `<h1>🏗️ ${many ? 'मेरे प्रोजेक्ट' : 'मेरा प्रोजेक्ट'} <small>Projects</small></h1>` +
+        (can('canCreateProject') ? '<a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>' : '') +
         (many ? '<p class="muted">जिस प्रोजेक्ट में काम करना है उसे छूइए.</p>' : '') +
         (state.projects.map((p, i) => `
           <${many ? 'button type="button"' : 'div'} class="card pick ${p.id === state.project.id ? 'on' : ''}" data-id="${p.id}">
             <div class="row"><b style="font-size:1.3rem">${esc(p.name)}</b>${many && p.id === state.project.id ? '<span class="pill">✔ चुना है</span>' : ''}</div>
+            <div><span class="pill">${esc(Authz.ROLE_LABEL[Authz.roleIn(state.user, p.id)] || '')}</span></div>
             ${p.location ? `<div class="muted">📍 ${esc(p.location)}</div>` : ''}
             ${p.plot_size ? `<div class="muted">प्लॉट: ${esc(p.plot_size)}</div>` : ''}
             <div class="muted">${esc(STATUS_HI[p.status] || '')}${p.start_date ? ' · शुरू: ' + niceDate(p.start_date) : ''}</div>
             ${totals[i] ? `<div style="margin-top:8px">कुल खर्च <span class="amount">${money(totals[i].total_expense)}</span></div>` : ''}
-          </${many ? 'button' : 'div'}>`).join('') || '<div class="empty">अभी कोई प्रोजेक्ट नहीं जुड़ा है.</div>');
+          </${many ? 'button' : 'div'}>`).join('') || noProject());
       $view.querySelectorAll('button.pick').forEach(b => b.onclick = () => {
         state.project = state.projects.find(p => p.id === Number(b.dataset.id));
         store.set('projectId', state.project.id);
@@ -234,7 +303,8 @@
   // ----- Add expense -----
   async function screenAdd() {
     chrome('add', '#/home');
-    if (!state.project) { $view.innerHTML = '<div class="empty"><div class="ico">🏠</div>अभी कोई प्रोजेक्ट नहीं जुड़ा है.</div>'; return; }
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    if (!allowedCats().length) { $view.innerHTML = '<div class="empty"><div class="ico">🔒</div><h2>अभी कोई खर्च श्रेणी उपलब्ध नहीं है</h2><p>No expense category is available to you.</p></div>'; return; }
     loading();
     let names;
     try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
@@ -247,7 +317,7 @@
       ${state.projects.length > 1 ? '<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 प्रोजेक्ट बदलें <span class="sub">Change Project</span></a>' : ''}
       <div id="top"></div>
       <div class="step" id="s-cat"><div class="q"><span class="num">1</span>किस चीज़ का खर्च है?</div>
-        <div class="choices">${CATS.map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${c.hi}<br><small>${c.en}</small></button>`).join('')}</div>
+        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${c.hi}<br><small>${c.en}</small></button>`).join('')}</div>
         <div class="field-error" id="e-cat"></div></div>
       <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>कितना पैसा? <small>Amount</small></label>
         <div class="rupee"><span>₹</span><input id="amt" type="text" inputmode="decimal" pattern="[0-9.]*" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
@@ -310,7 +380,7 @@
               ${r.is_active ? '' : '<span class="pill warn">काम बंद</span>'}
               ${r.last_paid ? `<span class="lab-last">Last paid: ${shortDate(r.last_paid)}</span>` : ''}</span></label>
           <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0" aria-label="${esc(r.name)} राशि" value="${esc(lab.amt[r.labour] || '')}"></span>
-          ${r.is_active ? '<button type="button" class="lab-stop">काम बंद करें <small>Mark inactive</small></button>' : ''}
+          ${r.is_active && can('canManageLabour') ? '<button type="button" class="lab-stop">काम बंद करें <small>Mark inactive</small></button>' : ''}
         </div>`).join('')
         : '<div class="msg info">इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है। "नया मज़दूर" जोड़िए या पुराने मज़दूर दिखाइए.</div>';
       labFilter();
@@ -653,7 +723,7 @@
         <div class="q"><span class="num">3</span>किस मज़दूर को दिया? <small>Labour Payments</small> <small id="lcount"></small></div>
         <div class="lab-bar">
           <input id="lq" type="text" autocomplete="off" enterkeyhint="search" placeholder="🔍 मज़दूर खोजिए (Search Labour)" value="${esc(lab.q)}">
-          <button type="button" class="btn line" id="ladd">➕ नया <span class="sub">Add Labour</span></button>
+          ${can('canManageLabour') ? '<button type="button" class="btn line" id="ladd">➕ नया <span class="sub">Add Labour</span></button>' : ''}
         </div>
         <label class="lab-inact"><input type="checkbox" id="linact" ${lab.showInactive ? 'checked' : ''}> पुराने / काम बंद मज़दूर भी दिखाएँ <small>Show Inactive</small></label>
         <div id="lnote"></div>
@@ -661,7 +731,7 @@
         <div class="card row lab-total"><span>कुल मज़दूरी <small>Total Labour Payment</small></span><span class="amount" id="ltotal">${money(0)}</span></div>
         <div><div class="field-error" id="e-lab"></div></div>`;
       $('lq').oninput = e => { lab.q = e.target.value; labFilter(); };
-      $('ladd').onclick = () => labModal(gen);
+      if ($('ladd')) $('ladd').onclick = () => labModal(gen);
       $('linact').onchange = async e => {
         lab.showInactive = e.target.checked;
         try { await labLoad('inactive'); if (labAlive(gen)) labDrawRows(); }
@@ -725,14 +795,14 @@
         html = '<div class="q"><span class="num">3</span>किसको दिया? <small>Name</small></div><p class="muted">पहले ऊपर बताइए कि किस चीज़ का खर्च है.</p>';
       } else if (cat === 'CONTRACTOR') {
         html = `<div class="q"><span class="num">3</span>किस ठेकेदार को दिया? <small>Contractor</small></div>
-          <button class="btn line" type="button" id="cadd">➕ नया ठेकेदार <span class="sub">Add Contractor</span></button>` +
+          ${can('canManageContractors') ? '<button class="btn line" type="button" id="cadd">➕ नया ठेकेदार <span class="sub">Add Contractor</span></button>' : ''}` +
           (names.contracts.length
             ? names.contracts.map(contractCard).join('')
             : '<div class="msg info">इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। "नया ठेकेदार" दबाइए.</div>') +
           '<div class="field-error" id="e-who"></div>';
       } else if (cat === 'SUPPLIER') {
         html = `<div class="q"><span class="num">3</span>किस सप्लायर को दिया? <small>Supplier</small></div>
-          <button class="btn line" type="button" id="sadd">➕ नया Supplier <span class="sub">Add Supplier</span></button>` +
+          ${can('canManageSuppliers') ? '<button class="btn line" type="button" id="sadd">➕ नया Supplier <span class="sub">Add Supplier</span></button>' : ''}` +
           (names.suppliers.length
             ? `<select id="supplier"><option value="">— सप्लायर चुनिए —</option>${names.suppliers.map(x => `<option value="${x.id}">${esc(x.name)}${x.supplier_type ? ' — ' + esc(x.supplier_type) : ''}</option>`).join('')}</select>`
             : '<div class="msg info">अभी कोई सप्लायर नहीं है। "नया Supplier" दबाइए.</div>') +
@@ -883,7 +953,7 @@
 
   async function screenList(params) {
     chrome('list', '#/home');
-    if (!state.project) { $view.innerHTML = '<div class="empty"><div class="ico">🏠</div>अभी कोई प्रोजेक्ट नहीं जुड़ा है.</div>'; return; }
+    if (!state.project) { $view.innerHTML = noProject(); return; }
     listState = { cat: params.get('cat') || '', shown: 20 };
     loading();
     let rows, names;
@@ -894,6 +964,9 @@
       ]);
       rows = rows.results || rows;
     } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    const seen = new Set(viewableCats().map(c => c.key));
+    rows = rows.filter(r => seen.has(r.expense_category));
+    if (!seen.has(listState.cat)) listState.cat = '';
 
     const nameOf = r => {
       if (r.labour) return (names.labour.find(x => x.id === r.labour) || {}).name;
@@ -908,7 +981,7 @@
       const chip = (key, label) => `<button type="button" class="choice" data-c="${key}" aria-pressed="${listState.cat === key}">${label}</button>`;
       $view.innerHTML = `
         <h1>📋 खर्च देखें <small>View Expenses</small></h1>
-        <div class="chips">${chip('', 'सब')}${CATS.map(c => chip(c.key, `${c.icon} ${c.hi}`)).join('')}</div>
+        <div class="chips">${chip('', 'सब')}${viewableCats().map(c => chip(c.key, `${c.icon} ${c.hi}`)).join('')}</div>
         <div class="card"><div class="row"><span>कुल खर्च <small>Total</small></span><span class="amount">${money(total)}</span></div></div>` +
         (shown.length ? shown.slice(0, listState.shown).map(r => `
           <div class="card item">
@@ -916,8 +989,13 @@
             <div class="meta">${CAT[r.expense_category].icon} ${CAT[r.expense_category].hi}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
             ${r.expense_category === 'SUPPLIER' && r.description ? `<div class="note">🧱 ${esc(r.description)}</div>` : ''}
             ${r.remarks ? `<div class="note">📝 ${esc(r.remarks)}</div>` : ''}
-          </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>अभी कोई खर्च नहीं है.</p><a class="btn green" href="#/add">➕ खर्च डालें <span class="sub">Add Expense</span></a></div>`) +
+            ${can('canEditExpense') || can('canDeleteExpense') ? `<div class="row-actions">${can('canEditExpense') ? '<button type="button" class="btn line act">✏️ Edit</button>' : ''}${can('canDeleteExpense') ? '<button type="button" class="btn line danger act">🗑 Delete</button>' : ''}</div>` : ''}
+          </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>अभी कोई खर्च नहीं है.</p>${canAdd() ? '<a class="btn green" href="#/add">➕ खर्च डालें <span class="sub">Add Expense</span></a>' : ''}</div>`) +
         (shown.length > listState.shown ? '<button type="button" class="btn line" id="more">⬇ और दिखाएँ <span class="sub">Show more</span></button>' : '');
+      $view.querySelectorAll('.act').forEach(b => b.onclick = () => {
+        b.closest('.card').insertAdjacentHTML('beforeend', NOT_CONNECTED);   // no edit/delete API yet (Phase 2)
+        b.closest('.row-actions').remove();
+      });
       $view.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { listState.cat = b.dataset.c; listState.shown = 20; draw(); });
       const more = document.getElementById('more');
       if (more) more.onclick = () => { listState.shown += 20; draw(); };
@@ -928,7 +1006,7 @@
   // ----- Reports -----
   async function screenReports() {
     chrome('reports', '#/home');
-    if (!state.project) { $view.innerHTML = '<div class="empty"><div class="ico">🏠</div>अभी कोई प्रोजेक्ट नहीं जुड़ा है.</div>'; return; }
+    if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
     let d;
     try { d = await api(`projects/${state.project.id}/dashboard/`); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
@@ -940,12 +1018,12 @@
       <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
       <div class="card"><div class="muted">कुल खर्च <small>Total Expense</small></div><div class="big-total">${money(total)}</div></div>
       <h2>किस पर कितना खर्च हुआ</h2>
-      ${CATS.map(c => `
-        <a class="card" href="#/report/${c.key}">
+      ${viewableCats().map(c => { const link = can(Authz.reportPermission(c.key)); return `
+        <${link ? `a href="#/report/${c.key}"` : 'div'} class="card">
           <div class="row"><b>${c.icon} ${c.hi} <small>${c.en}</small></b><span class="amount">${money(d.category_breakup[c.key])}</span></div>
           <div class="bar"><i style="width:${pct(d.category_breakup[c.key])}%"></i></div>
-          <div class="muted" style="margin-top:6px">${pct(d.category_breakup[c.key])}% · देखने के लिए छूइए ›</div>
-        </a>`).join('')}
+          <div class="muted" style="margin-top:6px">${pct(d.category_breakup[c.key])}%${link ? ' · देखने के लिए छूइए ›' : ''}</div>
+        </${link ? 'a' : 'div'}>`; }).join('')}
       ${d.owner_contribution.length ? `<h2>मालिक का हिस्सा <small>Owner Share</small></h2>` + d.owner_contribution.map(o => `
         <div class="card"><div class="row"><b>${esc(o.owner_name)}</b><span class="amount">${money(o.total)}</span></div>
         <div class="muted">कुल खर्च का ${pct(o.total)}% दिया</div></div>`).join('') : ''}
@@ -962,7 +1040,7 @@
   async function screenReportOne(key) {
     const c = CAT[key];
     if (!c || !state.project) { location.hash = '#/reports'; return; }
-    chrome('reports', '#/reports');
+    chrome({ LABOUR: 'labour', SUPPLIER: 'suppliers', CONTRACTOR: 'contractors' }[key] || 'reports', '#/reports');
     loading();
     const q = `?project=${state.project.id}`;
     try {
@@ -992,6 +1070,218 @@
     } catch (e) { $view.innerHTML = errBox(friendly(e)); }
   }
 
+  // ---------- management screens (UI only: the server has no API for these yet -> Phase 2) ----------
+  const NOT_CONNECTED = '<div class="msg info">यह सिर्फ़ स्क्रीन है — सर्वर से जुड़ना अभी बाकी है, इसलिए कुछ सेव नहीं हुआ.<br><small>UI only (Phase 1): nothing was saved. Saving to the server comes in Phase 2.</small></div>';
+  const roleName = r => Authz.ROLE_LABEL[r] || '—';
+  // Who may be reset: the permission says the capability exists; this says which people.
+  //  - can manage users (SUPER_ADMIN): anyone else
+  //  - otherwise: only non-owner members of the project you are working in (never a super admin)
+  function resetEligible(u) {
+    if (!can('canResetUserPassword') || u.id === state.user.id) return false;
+    if (can('canManageUsers')) return true;
+    const role = state.project && Authz.roleIn(u, state.project.id);
+    return !u.allProjects && !!role && role !== Authz.ROLES.OWNER;
+  }
+  const projName = id => (state.realProjects.find(p => p.id === id) || {}).name || '';
+  // Users we can list: the test users in test mode, otherwise just you (no users API yet).
+  const people = () => (DEMO ? Authz.directory(state.realProjects) : [state.user]);
+  const passwordFields = (withOld) => `
+    ${withOld ? '<label for="pw0">पुराना पासवर्ड <small>Current password</small></label><input id="pw0" type="password" autocomplete="current-password">' : ''}
+    <label for="pw1">नया पासवर्ड <small>New password (min 8)</small></label><input id="pw1" type="password" autocomplete="new-password">
+    <label for="pw2">नया पासवर्ड दोबारा <small>Confirm</small></label><input id="pw2" type="password" autocomplete="new-password">`;
+  // Checks the typed passwords; never stores or sends them.
+  function passwordForm(formId, withOld) {
+    const f = document.getElementById(formId), $ = id => document.getElementById(id);
+    f.onsubmit = ev => {
+      ev.preventDefault();
+      const out = $('pwmsg');
+      if (withOld && !$('pw0').value) { out.innerHTML = errBox('कृपया पुराना पासवर्ड भरें.'); return; }
+      if ($('pw1').value.length < 8) { out.innerHTML = errBox('नया पासवर्ड कम से कम 8 अक्षर का हो.'); return; }
+      if ($('pw1').value !== $('pw2').value) { out.innerHTML = errBox('दोनों पासवर्ड एक जैसे नहीं हैं.'); return; }
+      f.reset();
+      out.innerHTML = NOT_CONNECTED;
+    };
+  }
+
+  function screenProfile() {
+    chrome('profile', '#/home');
+    const role = (state.project && Authz.roleIn(state.user, state.project.id)) || state.user.role;
+    $view.innerHTML = `<h1>🔑 पासवर्ड बदलें <small>Change Password</small></h1>
+      <div class="card"><b>${esc(state.user.name)}</b><div class="muted">${esc(roleName(role))}${state.user.email ? ' · ' + esc(state.user.email) : ''}</div></div>
+      <div id="pwmsg"></div>
+      <form id="pwf" novalidate>${passwordFields(true)}<button class="btn green" type="submit">💾 पासवर्ड बदलें <span class="sub">CHANGE PASSWORD</span></button></form>`;
+    passwordForm('pwf', true);
+  }
+
+  function screenResetPassword(id) {
+    const target = people().find(u => u.id === id);
+    if (!target || !resetEligible(target)) { location.hash = '#/home'; return; }
+    chrome('users', can('canManageUsers') ? '#/users' : '#/members');
+    $view.innerHTML = `<h1>🔑 पासवर्ड रीसेट <small>Reset Password</small></h1>
+      <div class="card"><b>${esc(target.name)}</b><div class="muted">${esc(roleName(target.role))}${target.email ? ' · ' + esc(target.email) : ''}</div></div>
+      <div id="pwmsg"></div>
+      <form id="pwf" novalidate>${passwordFields(false)}<button class="btn green" type="submit">💾 नया पासवर्ड सेट करें <span class="sub">RESET PASSWORD</span></button></form>`;
+    passwordForm('pwf', false);
+  }
+
+  function screenUsers() {
+    chrome('users', '#/home');
+    $view.innerHTML = `<h1>👥 यूज़र <small>Users</small></h1>` + NOT_CONNECTED +
+      people().map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div>
+        ${u.email ? `<div class="muted">${esc(u.email)}</div>` : ''}
+        <div class="muted">${u.allProjects ? 'सारे प्रोजेक्ट <small>All projects</small>' : u.assignedProjects.length ? u.assignedProjects.map(a => esc(projName(a.projectId)) + ' (' + roleName(a.role) + ')').join(', ') : 'कोई प्रोजेक्ट नहीं'}</div>
+        ${resetEligible(u) ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`).join('');
+  }
+
+  function screenMembers() {
+    chrome('members', '#/home');
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    const pid = state.project.id;
+    const members = people().filter(u => !u.allProjects && Authz.roleIn(u, pid));
+    const admins = people().filter(u => u.allProjects);
+    $view.innerHTML = `<h1>🤝 सदस्य <small>Project Members</small></h1><p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
+      <div id="mmsg">${NOT_CONNECTED}</div>` +
+      admins.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div><div class="muted">सारे प्रोजेक्ट पर अधिकार <small>Access to all projects</small></div></div>`).join('') +
+      (members.map(u => {
+        const role = Authz.roleIn(u, pid);
+        const reset = resetEligible(u);
+        return `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(role))}</span></div>
+          ${u.email ? `<div class="muted">${esc(u.email)}</div>` : ''}
+          ${can('canManageProjectMembers') ? `<button type="button" class="btn line m-remove" data-name="${esc(u.name)}" style="min-height:52px;font-size:1rem">➖ हटाएँ <span class="sub">Remove</span></button>` : ''}
+          ${reset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`;
+      }).join('') || '<div class="empty">अभी कोई और सदस्य नहीं है.</div>') +
+      `<h2>➕ सदस्य जोड़ें <small>Add Member</small></h2>
+      <form id="addm" novalidate><label for="m-who">ईमेल / यूज़र नाम <small>Email or username</small></label><input id="m-who" type="text" autocomplete="off" autocapitalize="none">
+        <label for="m-role">भूमिका <small>Role</small></label>
+        <select id="m-role"><option value="owner">OWNER</option><option value="manager">MANAGER</option><option value="viewer" selected>VIEWER</option></select>
+        <button class="btn green" type="submit">➕ जोड़ें <span class="sub">ADD MEMBER</span></button></form>`;
+    $view.querySelectorAll('.m-remove').forEach(b => b.onclick = () => {
+      if (confirm(`${b.dataset.name} को इस प्रोजेक्ट से हटाएँ?`)) document.getElementById('mmsg').innerHTML = NOT_CONNECTED;
+    });
+    document.getElementById('addm').onsubmit = ev => {
+      ev.preventDefault();
+      const mm = document.getElementById('mmsg');
+      if (!document.getElementById('m-who').value.trim()) { mm.innerHTML = errBox('कृपया ईमेल या यूज़र नाम भरें.'); return; }
+      mm.innerHTML = NOT_CONNECTED;
+    };
+  }
+
+  function screenSettings() {
+    chrome('settings', '#/home');
+    const p = state.project;
+    $view.innerHTML = `<h1>⚙️ सेटिंग <small>Settings</small></h1>` + NOT_CONNECTED +
+      (p && can('canManageProjectSettings') ? `<h2>प्रोजेक्ट सेटिंग <small>Project Settings</small></h2>
+        <div class="card"><b style="font-size:1.3rem">${esc(p.name)}</b>
+          <div class="muted">कोड: ${esc(p.code || '—')}</div>
+          ${p.location ? `<div class="muted">📍 ${esc(p.location)}</div>` : ''}
+          ${p.plot_size ? `<div class="muted">प्लॉट: ${esc(p.plot_size)}</div>` : ''}
+          <div class="muted">${esc(STATUS_HI[p.status] || '')}${p.start_date ? ' · शुरू: ' + niceDate(p.start_date) : ''}</div></div>
+        ${can('canManageProjectMembers') ? '<a class="btn line" href="#/members">🤝 सदस्य <span class="sub">Project Members</span></a>' : ''}` : (can('canManageProjectSettings') ? noProject() : '')) +
+      (can('canManagePermissions') ? `<h2>🔐 Role & Permissions</h2>
+        <a class="btn line" href="#/permissions">🔐 Role & Permissions <span class="sub">Choose what each role can do</span></a>` : '') +
+      (can('canManageApplicationSettings') ? `<h2>ऐप सेटिंग <small>Application Settings</small></h2>
+        <div class="card muted">सिर्फ़ Super Admin को दिखता है. अभी कोई ऐप सेटिंग नहीं है.<br><small>Super Admin only. No application settings yet.</small></div>` : '');
+  }
+
+  // ----- Role & Permissions: edits the same matrix that can() reads (authz.js). Phase 1: saved in this browser. -----
+  let permDraft = null, permFlash = '', permRole = 'owner';       // permDraft = edits not saved yet
+  const permDirty = () => !!permDraft && JSON.stringify(permDraft) !== JSON.stringify(Authz.getMatrix());
+  window.addEventListener('beforeunload', e => { if (permDirty()) { e.preventDefault(); e.returnValue = ''; } });
+
+  function screenPermissions() {
+    chrome('settings', '#/settings');
+    if (!permDraft) permDraft = Authz.getMatrix();
+    const flash = permFlash; permFlash = '';
+    const roles = Authz.ROLE_LIST, defs = Authz.DEFINITIONS;
+    const cell = (d, r) => Authz.isFixed(d.key, r)
+      ? `<span class="lock">🔒 ${permDraft[d.key][r] ? 'Required' : 'OFF'}</span>`
+      : `<button type="button" class="sw" role="switch" data-perm="${d.key}" data-role="${r}" aria-label="${esc(d.label)} — ${roleName(r)}"><i></i><b></b></button>`;
+    const groupRows = (fn) => Authz.GROUPS.map(g => fn(g, defs.filter(d => d.group === g.id))).join('');
+    $view.innerHTML = `<h1>🔐 Role & Permissions</h1>
+      <div class="msg info">Saved in this browser only (Phase 1). Other phones/computers keep the default permissions until Phase 2 stores them on the server. Project access (which projects a person can open) is separate and is not changed here.</div>
+      <div id="pmsg">${flash === 'saved' ? '<div class="msg ok" role="status">Permissions updated successfully.</div>'
+        : flash === 'reset' ? '<div class="msg ok" role="status">Permissions were reset to the default configuration.</div>'
+        : flash === 'nostore' ? errBox('Permissions were applied for now, but this browser would not store them, so they will be lost on reload.') : ''}</div>
+      <div class="perm-bar"><span id="pstate" class="pstate"></span>
+        <button type="button" class="pbtn primary" id="psave">Save Changes</button>
+        <button type="button" class="pbtn" id="pcancel">Cancel</button>
+        <button type="button" class="pbtn danger" id="preset">Reset to Default</button></div>
+      <div class="perm-desktop"><table class="perm"><thead><tr><th scope="col">Permission</th>${roles.map(r => `<th scope="col">${roleName(r)}</th>`).join('')}</tr></thead><tbody>
+        ${groupRows((g, list) => `<tr class="grp"><th colspan="${roles.length + 1}">${esc(g.label)}</th></tr>` +
+          list.map(d => `<tr><th scope="row">${esc(d.label)}</th>${roles.map(r => `<td>${cell(d, r)}</td>`).join('')}</tr>`).join(''))}
+      </tbody></table></div>
+      <div class="perm-mobile"><label for="prole" class="q">Role</label>
+        <select id="prole">${roles.map(r => `<option value="${r}" ${r === permRole ? 'selected' : ''}>${roleName(r)}</option>`).join('')}</select>
+        <div id="plist"></div></div>`;
+
+    const drawMobile = () => {
+      $('plist').innerHTML = groupRows((g, list) => `<h2>${esc(g.label)}</h2>` +
+        list.map(d => `<div class="prow"><span>${esc(d.label)}</span>${cell(d, permRole)}</div>`).join(''));
+      sync();
+    };
+    const $ = id => document.getElementById(id);
+    function sync() {
+      $view.querySelectorAll('.sw').forEach(b => {
+        const on = permDraft[b.dataset.perm][b.dataset.role];
+        b.setAttribute('aria-checked', String(on));
+        b.querySelector('b').textContent = on ? 'ON' : 'OFF';
+      });
+      const dirty = permDirty();
+      $('pstate').textContent = dirty ? '● Unsaved changes' : Authz.isDefault() ? 'Default permissions' : 'Custom permissions in use';
+      $('pstate').classList.toggle('dirty', dirty);
+      $('psave').disabled = !dirty; $('pcancel').disabled = !dirty;
+    }
+    $view.onclick = e => {
+      const b = e.target.closest('.sw');
+      if (!b) return;
+      permDraft[b.dataset.perm][b.dataset.role] = !permDraft[b.dataset.perm][b.dataset.role];
+      $('pmsg').innerHTML = '';
+      sync();
+    };
+    $('prole').onchange = e => { permRole = e.target.value; drawMobile(); };
+    $('psave').onclick = () => { permFlash = Authz.saveMatrix(permDraft) ? 'saved' : 'nostore'; permDraft = null; screenPermissions(); };
+    $('pcancel').onclick = () => { permDraft = Authz.getMatrix(); $('pmsg').innerHTML = ''; screenPermissions(); };
+    $('preset').onclick = () => confirmBox('Reset all role permissions to the default configuration?', 'Reset', () => {
+      Authz.resetMatrix(); permDraft = null; permFlash = 'reset'; screenPermissions();
+    });
+    drawMobile();
+  }
+
+  // Small Cancel / confirm dialog (same look as the other pop-ups).
+  function confirmBox(text, okLabel, onOk) {
+    const box = document.createElement('div');
+    box.className = 'modal';
+    box.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-label="${esc(text)}">
+      <h2 style="margin-top:0">${esc(text)}</h2>
+      <button class="btn line" type="button" id="cb-cancel">Cancel</button>
+      <button class="btn green" type="button" id="cb-ok">${esc(okLabel)}</button></div>`;
+    document.body.appendChild(box);
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', close);
+    box.querySelector('#cb-cancel').onclick = close;
+    box.querySelector('#cb-ok').onclick = () => { close(); onOk(); };
+    box.querySelector('#cb-cancel').focus();
+  }
+
+  function screenNewProject() {
+    chrome('project', '#/project');
+    $view.innerHTML = `<h1>➕ नया प्रोजेक्ट <small>New Project</small></h1><div id="npmsg">${NOT_CONNECTED}</div>
+      <form id="npf" novalidate>
+        <label for="np-name">प्रोजेक्ट का नाम <small>Name</small> *</label><input id="np-name" type="text" autocomplete="off">
+        <label for="np-code">कोड <small>Code</small> *</label><input id="np-code" type="text" autocomplete="off" autocapitalize="characters">
+        <label for="np-loc">जगह <small>Location</small></label><input id="np-loc" type="text" autocomplete="off">
+        <label for="np-plot">प्लॉट साइज़ <small>Plot size</small></label><input id="np-plot" type="text" autocomplete="off">
+        <button class="btn green" type="submit">💾 प्रोजेक्ट बनाएँ <span class="sub">CREATE PROJECT</span></button></form>`;
+    document.getElementById('npf').onsubmit = ev => {
+      ev.preventDefault();
+      const out = document.getElementById('npmsg');
+      if (!document.getElementById('np-name').value.trim() || !document.getElementById('np-code').value.trim()) { out.innerHTML = errBox('कृपया नाम और कोड भरें.'); return; }
+      out.innerHTML = NOT_CONNECTED;
+    };
+  }
+
   // ---------- router ----------
   async function route() {
     const [path, qs] = (location.hash.replace(/^#/, '') || '/home').split('?');
@@ -1002,6 +1292,12 @@
     if (!state.me.owner_id) return screenBlocked();
 
     const [, page, arg] = path.split('/');
+    if (page !== 'permissions' && permDraft) {          // never drop unsaved permission edits silently
+      if (permDirty() && !confirm('You have unsaved permission changes. Leave without saving?')) { location.hash = '#/permissions'; return; }
+      permDraft = null;
+    }
+    const need = Authz.routePermission(page, arg);
+    if (need && !canAny(need)) return screenNoAccess();   // typed-in / bookmarked links
     switch (page) {
       case 'add': return screenAdd();
       case 'done': return screenDone();
@@ -1009,6 +1305,13 @@
       case 'reports': return screenReports();
       case 'report': return screenReportOne(arg);
       case 'project': return screenProject();
+      case 'profile': return screenProfile();
+      case 'users': return screenUsers();
+      case 'members': return screenMembers();
+      case 'settings': return screenSettings();
+      case 'permissions': return screenPermissions();
+      case 'newproject': return screenNewProject();
+      case 'resetpw': return screenResetPassword(arg);
       default: return screenHome();
     }
   }
@@ -1022,6 +1325,10 @@
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(e => console.error('service worker', e)));
   }
 
+  document.addEventListener('click', e => {
+    const sheet = document.getElementById('menuSheet');
+    if (!sheet.hidden && !e.target.closest('#menuSheet, #menuBtn')) sheet.hidden = true;
+  });
   window.addEventListener('hashchange', route);
   route();
 })();
