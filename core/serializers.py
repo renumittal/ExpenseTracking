@@ -112,6 +112,16 @@ class SupplierSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'supplier_type', 'mobile', 'address', 'remarks']
 
 
+class NewSupplierSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    mobile = serializers.CharField(max_length=20)
+    supplier_type = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    remarks = serializers.CharField(required=False, allow_blank=True, default='')
+    # Answers to the "is this the same supplier?" question (see SupplierViewSet.add).
+    use_supplier = serializers.IntegerField(required=False, allow_null=True, default=None)
+    confirm_new = serializers.BooleanField(required=False, default=False)
+
+
 class LabourSerializer(serializers.ModelSerializer):
     class Meta:
         model = Labour

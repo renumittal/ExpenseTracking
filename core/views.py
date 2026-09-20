@@ -39,6 +39,7 @@ from .serializers import (
     ManagerLabourDistributionSerializer,
     NewContractorSerializer,
     NewProjectLabourSerializer,
+    NewSupplierSerializer,
     ProjectLabourSerializer,
     ProjectSerializer,
     SupplierSerializer,
@@ -367,6 +368,66 @@ class SupplierViewSet(viewsets.ModelViewSet):
     allowed_roles = {Role.OWNER}
     queryset = Supplier.objects.all()
     http_method_names = ['get', 'post', 'head', 'options']
+
+    @action(detail=False, methods=['post'], url_path='add')
+    def add(self, request):
+        """
+        Add a supplier without creating duplicates (same rules as contractors/labour):
+        same mobile reuses that supplier; same name with no mobile on file reuses it and
+        fills the mobile; same name with a different mobile answers 409 with candidates and
+        needs {use_supplier: <id>} or {confirm_new: true}. A supplier has no contract:
+        every purchase is its own ExpenseTransaction.
+        """
+        ser = NewSupplierSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        name = ' '.join(data['name'].split())
+        mobile = _digits(data['mobile'])[-10:]
+        if not name:
+            raise ValidationError({'name': 'This field may not be blank.'})
+        if len(mobile) < 10:
+            raise ValidationError({'mobile': 'Enter a valid mobile number.'})
+
+        with transaction.atomic():
+            everyone = list(Supplier.objects.order_by('id'))
+            same_name = [x for x in everyone if _norm(x.name) == _norm(name)]
+            same_mobile = [x for x in everyone if _digits(x.mobile)[-10:] == mobile]
+            supplier = None
+
+            if data['use_supplier']:
+                supplier = next((x for x in same_name + same_mobile if x.id == data['use_supplier']), None)
+                if supplier is None:
+                    raise ValidationError({'use_supplier': 'That is not a matching supplier.'})
+            elif same_mobile:
+                supplier = same_mobile[0]
+            else:
+                supplier = next((x for x in same_name if not x.mobile.strip()), None)
+                if supplier is None and same_name and not data['confirm_new']:
+                    return Response({
+                        'code': 'possible_duplicate',
+                        'detail': 'A supplier with this name already exists. Is it the same supplier?',
+                        'candidates': [
+                            {
+                                'supplier': x.id,
+                                'name': x.name,
+                                'supplier_type': x.supplier_type,
+                                'mobile_masked': f'******{_digits(x.mobile)[-4:]}' if _digits(x.mobile) else '',
+                            }
+                            for x in same_name
+                        ],
+                    }, status=status.HTTP_409_CONFLICT)
+
+            reused = supplier is not None
+            if supplier is None:
+                supplier = Supplier.objects.create(
+                    name=name, mobile=mobile, supplier_type=data['supplier_type'].strip(),
+                    remarks=data['remarks'].strip())
+            elif not supplier.mobile.strip():
+                supplier.mobile = mobile
+                supplier.save(update_fields=['mobile'])
+        body = SupplierSerializer(supplier).data
+        body['reused'] = reused
+        return Response(body, status=status.HTTP_200_OK if reused else status.HTTP_201_CREATED)
 
 
 class LabourViewSet(viewsets.ModelViewSet):

@@ -1062,6 +1062,111 @@ class ContractorFlowTests(APITestCase):
             self.assertEqual(self.client.post('/api/expense-transactions/', {**base, **extra}, format='json').status_code, 201, extra)
 
 
+class SupplierFlowTests(APITestCase):
+    """Supplier: no contract. De-duplicated master; every purchase is its own expense row."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        self.owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+        self.sharma = Supplier.objects.create(name='Sharma Building Material', mobile='98765 43210')
+
+    def add(self, **kw):
+        return self.client.post('/api/suppliers/add/', {'name': 'Gupta Electricals', 'mobile': '9812345678', **kw}, format='json')
+
+    def buy(self, supplier, amount, material, **kw):
+        return self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-20', 'expense_category': ExpenseCategory.SUPPLIER,
+            'expense_type': 'Supplier Payment', 'party_type': PartyType.SUPPLIER, 'supplier': supplier.id,
+            'description': material, 'paid_by_owner': self.owner.id, 'amount': amount,
+            'payment_mode': PaymentMode.UPI, **kw}, format='json')
+
+    def test_supplier_is_created_with_type(self):
+        r = self.add(supplier_type='Electrical Material', remarks='ok')
+        self.assertEqual(r.status_code, 201)
+        self.assertFalse(r.data['reused'])
+        s = Supplier.objects.get(pk=r.data['id'])
+        self.assertEqual((s.name, s.mobile, s.supplier_type), ('Gupta Electricals', '9812345678', 'Electrical Material'))
+
+    def test_supplier_type_is_optional(self):
+        self.assertEqual(self.add().status_code, 201)
+
+    def test_name_and_valid_mobile_required(self):
+        self.assertEqual(self.add(name='  ').status_code, 400)
+        self.assertEqual(self.add(mobile='12345').status_code, 400)
+        self.assertEqual(self.add(mobile='').status_code, 400)
+
+    def test_same_mobile_reuses_supplier(self):
+        n = Supplier.objects.count()
+        r = self.add(name='Sharma B.M.', mobile='+91 98765-43210')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data['reused'])
+        self.assertEqual(r.data['id'], self.sharma.id)
+        self.assertEqual(Supplier.objects.count(), n)
+
+    def test_same_name_without_mobile_reuses_and_fills_mobile(self):
+        legacy = Supplier.objects.create(name='Old Bricks', mobile='')
+        n = Supplier.objects.count()
+        r = self.add(name=' old   BRICKS ', mobile='9111111111')
+        self.assertEqual(r.data['id'], legacy.id)
+        self.assertEqual(Supplier.objects.count(), n)
+        self.assertEqual(Supplier.objects.get(pk=legacy.id).mobile, '9111111111')
+
+    def test_same_name_different_mobile_asks_then_honours_the_answer(self):
+        n = Supplier.objects.count()
+        r = self.add(name='sharma building material', mobile='9000000001')
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data['code'], 'possible_duplicate')
+        self.assertEqual(r.data['candidates'][0]['supplier'], self.sharma.id)
+        self.assertEqual(r.data['candidates'][0]['mobile_masked'], '******3210')
+        self.assertEqual(Supplier.objects.count(), n)
+
+        used = self.add(name='sharma building material', mobile='9000000001', use_supplier=self.sharma.id)
+        self.assertEqual(used.data['id'], self.sharma.id)
+        self.assertEqual(Supplier.objects.count(), n)
+
+        different = self.add(name='sharma building material', mobile='9000000001', confirm_new=True)
+        self.assertEqual(different.status_code, 201)
+        self.assertNotEqual(different.data['id'], self.sharma.id)
+        self.assertEqual(Supplier.objects.count(), n + 1)
+
+    def test_use_supplier_must_be_a_real_candidate(self):
+        other = Supplier.objects.create(name='Unrelated', mobile='9222222222')
+        r = self.add(name='Sharma Building Material', mobile='9000000001', use_supplier=other.id)
+        self.assertEqual(r.status_code, 400)
+
+    def test_manager_cannot_add_supplier(self):
+        mgr = User.objects.create_user(username='mgr', password='pass12345')
+        Profile.objects.create(user=mgr, role=Role.MANAGER)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=mgr).key)
+        self.assertEqual(self.add().status_code, 403)
+
+    def test_each_purchase_is_a_separate_transaction_with_its_material(self):
+        for material, amount in (('Cement', '25000'), ('Sand', '18000'), ('Cement', '12000')):
+            r = self.buy(self.sharma, amount, material)
+            self.assertEqual(r.status_code, 201, r.data)
+            self.assertEqual(r.data['description'], material)
+            self.assertEqual(r.data['party_type'], PartyType.SUPPLIER)
+        rows = ExpenseTransaction.objects.filter(supplier=self.sharma)
+        self.assertEqual(rows.count(), 3)
+        self.assertEqual(sorted(r.description for r in rows), ['Cement', 'Cement', 'Sand'])
+        report = self.client.get('/api/reports/supplier/', {'project': self.project.id}).data
+        self.assertEqual(Decimal(report['suppliers'][0]['total_paid']), Decimal('55000'))
+        self.assertEqual(Decimal(report['grand_total']), Decimal('55000'))
+
+    def test_supplier_has_no_contract_fields(self):
+        row = self.client.get('/api/suppliers/').data[0]
+        self.assertFalse({'contract_amount', 'paid_amount', 'balance', 'balance_amount'} & set(row))
+        r = self.buy(self.sharma, '100', 'Cement')
+        self.assertIsNone(r.data['contractor_contract'])
+
+    def test_legacy_add_by_name_still_works(self):
+        self.assertEqual(self.client.post('/api/suppliers/', {'name': 'Quick Add'}).status_code, 201)
+
+
 class BackfillMigrationTests(TransactionTestCase):
     """Historical payments -> ProjectLabour rows, using the real 0001 -> 0002 migration."""
 

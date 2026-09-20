@@ -17,6 +17,8 @@
     { key: 'BANK_TRANSFER', hi: 'बैंक', en: 'Bank' },
     { key: 'CHEQUE', hi: 'चेक', en: 'Cheque' },
   ];
+  const SUPPLIER_TYPES = ['Electrical Material', 'Plumbing Material', 'Building Material', 'Saria / Steel',
+    'Chokhat / Door', 'Wood / Timber', 'Paint / Hardware', 'Other'];
   const STATUS_HI = { PLANNED: 'शुरू होना बाकी', ONGOING: 'काम चालू है', COMPLETED: 'काम पूरा हो गया' };
   const MONTHS = ['जनवरी', 'फ़रवरी', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितंबर', 'अक्तूबर', 'नवंबर', 'दिसंबर'];
   const MSG = {
@@ -237,7 +239,7 @@
     let names;
     try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
 
-    const f = { cat: '', amount: '', name: '', contractId: '', what: '', date: today(), mode: 'CASH', note: '' };
+    const f = { cat: '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '' };
     let saving = false;
     $view.innerHTML = `
       <h1>➕ खर्च डालें <small>Add Expense</small></h1>
@@ -554,6 +556,97 @@
       </button>`;
     };
 
+    // ----- Supplier: pick a supplier (or add one), then say what was bought -----
+    function supplierModal() {
+      const box = document.createElement('div');
+      box.className = 'modal';
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया Supplier" novalidate>
+        <h2 style="margin-top:0">➕ नया Supplier <small>Add Supplier</small></h2>
+        <div id="m-err"></div>
+        <div id="m-fields">
+          <label for="m-name">नाम <small>Supplier Name</small> *</label>
+          <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
+          <label for="m-type">सामान का प्रकार <small>Supplier Type (optional)</small></label>
+          <select id="m-type"><option value="">— चुनिए —</option>${SUPPLIER_TYPES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
+          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
+          <button class="btn green" type="submit" id="m-save">💾 सेव करें <span class="sub">SAVE</span></button>
+        </div>
+        <div id="m-dup" hidden></div>
+        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+      </form>`;
+      document.body.appendChild(box);
+      const m = id => box.querySelector('#' + id);
+      const close = () => {
+        box.remove();
+        document.removeEventListener('keydown', onKey);
+        window.removeEventListener('hashchange', close);
+      };
+      const onKey = e => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      window.addEventListener('hashchange', close);
+      m('m-cancel').onclick = close;
+      m('m-name').focus();
+
+      // Same name, different mobile: ask "is this the same supplier?".
+      function askSame(cands, send) {
+        m('m-fields').hidden = true;
+        const dup = m('m-dup');
+        dup.hidden = false;
+        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही Supplier है? <small>Is this the same supplier?</small></h2>` +
+          cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
+            <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
+            ${c.supplier_type ? `<div class="muted">${esc(c.supplier_type)}</div>` : ''}
+            <button class="btn green" type="button" data-use="${c.supplier}" style="margin-bottom:0">✔ यही है <span class="sub">Use Existing</span></button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ अलग Supplier है <span class="sub">Different Supplier</span></button>`;
+        dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_supplier: Number(b.dataset.use) }));
+        m('m-new').onclick = () => send({ confirm_new: true });
+      }
+
+      async function send(extra) {
+        const btns = box.querySelectorAll('button');
+        btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
+        m('m-err').innerHTML = '';
+        let r;
+        try {
+          r = await api('suppliers/add/', { method: 'POST', body: {
+            name: m('m-name').value.trim(), mobile: m('m-mob').value.trim(), supplier_type: m('m-type').value,
+            remarks: m('m-rem').value.trim(), ...extra } });
+        } catch (e) {
+          btns.forEach(b => { b.disabled = false; });
+          if (e.status === 409 && e.data && e.data.code === 'possible_duplicate') { askSame(e.data.candidates || [], send); return; }
+          m('m-fields').hidden = false; m('m-dup').hidden = true;
+          m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
+          return;
+        }
+        close();
+        try {
+          state.names = null;
+          names = await loadNames(true);
+          if (f.cat !== 'SUPPLIER') return;
+          const keep = f.what;
+          drawWho();
+          if ($('material')) { $('material').value = keep; f.what = keep; }
+          selectSupplier(String(r.id));
+          if ($('material') && !keep) $('material').focus();
+        } catch (err) { console.error('after add supplier', err); }
+      }
+
+      box.querySelector('form').onsubmit = ev => {
+        ev.preventDefault();
+        if (!m('m-name').value.trim()) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
+        if (m('m-mob').value.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        send({});
+      };
+    }
+    function selectSupplier(id) {
+      f.supplierId = id;
+      if ($('supplier')) $('supplier').value = id;
+      if ($('e-who')) setErr('e-who', '');
+    }
+
     async function drawLabour() {
       const gen = ++labGen;
       $('s-who').innerHTML = `
@@ -627,7 +720,7 @@
       let html = '';
       $('s-amt').hidden = cat === 'LABOUR';   // labour has one amount per person instead
       if (cat !== 'LABOUR') labGen++;         // stop any labour load still in flight
-      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.what = ''; drawLabour(); return; }
+      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = ''; drawLabour(); return; }
       if (!cat) {
         html = '<div class="q"><span class="num">3</span>किसको दिया? <small>Name</small></div><p class="muted">पहले ऊपर बताइए कि किस चीज़ का खर्च है.</p>';
       } else if (cat === 'CONTRACTOR') {
@@ -637,6 +730,15 @@
             ? names.contracts.map(contractCard).join('')
             : '<div class="msg info">इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। "नया ठेकेदार" दबाइए.</div>') +
           '<div class="field-error" id="e-who"></div>';
+      } else if (cat === 'SUPPLIER') {
+        html = `<div class="q"><span class="num">3</span>किस सप्लायर को दिया? <small>Supplier</small></div>
+          <button class="btn line" type="button" id="sadd">➕ नया Supplier <span class="sub">Add Supplier</span></button>` +
+          (names.suppliers.length
+            ? `<select id="supplier"><option value="">— सप्लायर चुनिए —</option>${names.suppliers.map(x => `<option value="${x.id}">${esc(x.name)}${x.supplier_type ? ' — ' + esc(x.supplier_type) : ''}</option>`).join('')}</select>`
+            : '<div class="msg info">अभी कोई सप्लायर नहीं है। "नया Supplier" दबाइए.</div>') +
+          `<label for="material" style="margin-top:18px;display:block;font-weight:700">क्या सामान लिया? <small>Material / Item</small> *</label>
+          <input id="material" type="text" autocomplete="off" autocapitalize="sentences" placeholder="जैसे: सीमेंट, रेत" enterkeyhint="next">
+          <div class="field-error" id="e-who"></div>`;
       } else {
         const label = cat === 'LABOUR' ? 'किस मज़दूर को दिया?' : cat === 'SUPPLIER' ? 'किस सप्लायर को दिया?' : 'किसको दिया?';
         html = `<label for="name"><span class="num">3</span>${label} <small>Name</small></label>
@@ -645,7 +747,10 @@
           (cat === 'MISCELLANEOUS' ? `<label for="what" style="margin-top:18px;display:block;font-weight:700">किस काम का? <small>(optional, जैसे: चाय, ट्रांसपोर्ट)</small></label><input id="what" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="next">` : '');
       }
       $('s-who').innerHTML = html;
-      f.name = ''; f.contractId = ''; f.what = '';
+      f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = '';
+      if ($('sadd')) $('sadd').onclick = supplierModal;
+      if ($('supplier')) $('supplier').onchange = e => { f.supplierId = e.target.value; setErr('e-who', ''); };
+      if ($('material')) $('material').oninput = e => { f.what = e.target.value; setErr('e-who', ''); };
       if ($('cadd')) $('cadd').onclick = contractorModal;
       document.querySelectorAll('[data-contract]').forEach(b => b.onclick = () => selectContract(b.dataset.contract));
       if ($('what')) $('what').oninput = e => { f.what = e.target.value; };
@@ -701,7 +806,9 @@
         if (amt >= 1e10) return fail('e-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.', 's-amt');
       }
       if (f.cat === 'CONTRACTOR' && !f.contractId) return fail('e-who', 'कृपया ठेकेदार चुनिए.', 's-who');
-      if (f.cat !== 'CONTRACTOR' && f.cat !== 'LABOUR' && !f.name.trim()) return fail('e-who', 'कृपया नाम भरें.', 's-who');
+      if (f.cat === 'SUPPLIER' && !f.supplierId) return fail('e-who', 'कृपया सप्लायर चुनिए.', 's-who');
+      if (f.cat === 'SUPPLIER' && !f.what.trim()) return fail('e-who', 'कृपया बताइए क्या सामान लिया.', 's-who');
+      if (f.cat === 'MISCELLANEOUS' && !f.name.trim()) return fail('e-who', 'कृपया नाम भरें.', 's-who');
       if (!$('date').value) return fail('e-date', 'कृपया तारीख चुनिए.', 's-date');
       return false;
     }
@@ -744,14 +851,12 @@
         if (f.cat === 'CONTRACTOR') body.contractor_contract = Number(f.contractId);
         else if (f.cat === 'MISCELLANEOUS') body.payee_name = f.name.trim();
         else {
-          const typed = f.name.trim();
-          let match = names.suppliers.find(x => x.name.toLowerCase() === typed.toLowerCase());
-          if (!match) match = await api('suppliers/', { method: 'POST', body: { name: typed } });
-          body.supplier = match.id;
+          body.supplier = Number(f.supplierId);
+          body.description = f.what.trim();   // the material / item bought
         }
         await api('expense-transactions/', { method: 'POST', body });
         state.names = null;
-        sessionStorage.setItem('justSaved', JSON.stringify({ amount: body.amount, who: f.cat === 'CONTRACTOR' ? names.contracts.find(c => String(c.id) === f.contractId).contractor_name : f.name.trim() }));
+        sessionStorage.setItem('justSaved', JSON.stringify({ amount: body.amount, who: f.cat === 'CONTRACTOR' ? names.contracts.find(c => String(c.id) === f.contractId).contractor_name : f.cat === 'SUPPLIER' ? names.suppliers.find(x => String(x.id) === f.supplierId).name : f.name.trim() }));
         location.hash = '#/done';
       } catch (e) {
         saving = false; $('save').disabled = false; $('save').firstChild.textContent = '💾 खर्च सेव करें ';
@@ -809,6 +914,7 @@
           <div class="card item">
             <div class="row"><span class="who">${esc(nameOf(r) || '—')}</span><span class="amount">${money(r.amount)}</span></div>
             <div class="meta">${CAT[r.expense_category].icon} ${CAT[r.expense_category].hi}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
+            ${r.expense_category === 'SUPPLIER' && r.description ? `<div class="note">🧱 ${esc(r.description)}</div>` : ''}
             ${r.remarks ? `<div class="note">📝 ${esc(r.remarks)}</div>` : ''}
           </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>अभी कोई खर्च नहीं है.</p><a class="btn green" href="#/add">➕ खर्च डालें <span class="sub">Add Expense</span></a></div>`) +
         (shown.length > listState.shown ? '<button type="button" class="btn line" id="more">⬇ और दिखाएँ <span class="sub">Show more</span></button>' : '');
