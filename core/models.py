@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import models
+from django.db import models, transaction
 from django.db.models import OuterRef, Subquery
 
 
@@ -63,6 +63,37 @@ class Profile(models.Model):
 
     def __str__(self):
         return f'{self.user.get_username()} ({self.role})'
+
+
+class RolePermission(models.Model):
+    """
+    Server-side permission matrix: one row per (role, permission). This is the authority the
+    API checks (see permissions.has_permission); it is the start of the central permission
+    system, so new permissions are added as new `permission` values, not new tables.
+
+    Roles here include VIEWER, which is not a Profile.role yet. A user whose role has no row
+    falls back to the built-in default in permissions.PERMISSION_DEFAULTS (fail closed).
+    """
+
+    ROLE_CHOICES = [
+        ('ADMIN', 'Admin'),
+        ('OWNER', 'Owner'),
+        ('MANAGER', 'Manager'),
+        ('VIEWER', 'Viewer'),
+    ]
+
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES)
+    permission = models.CharField(max_length=50)
+    allowed = models.BooleanField(default=False)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['role', 'permission'], name='unique_role_permission'),
+        ]
+        ordering = ['permission', 'role']
+
+    def __str__(self):
+        return f'{self.role}: {self.permission} = {"ON" if self.allowed else "OFF"}'
 
 
 # ---------------------------------------------------------------------------
@@ -286,6 +317,18 @@ class ExpenseTransaction(models.Model):
 
     status = models.CharField(max_length=20, choices=TransactionStatus.choices, default=TransactionStatus.ACTIVE)
 
+    # Supplier bill (one per transaction). The file itself lives in private Supabase Storage;
+    # only its object path and metadata are stored here. Empty bill_path means "no bill".
+    bill_path = models.CharField(max_length=255, blank=True, default='', editable=False)
+    bill_filename = models.CharField(max_length=255, blank=True, default='', editable=False)
+    bill_content_type = models.CharField(max_length=100, blank=True, default='', editable=False)
+    bill_size = models.PositiveIntegerField(null=True, blank=True, editable=False)
+    bill_uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, editable=False,
+        related_name='bills_uploaded',
+    )
+    bill_uploaded_at = models.DateTimeField(null=True, blank=True, editable=False)
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='expense_transactions_created'
     )
@@ -350,6 +393,11 @@ class ExpenseTransaction(models.Model):
         self.save(update_fields=update_fields)
 
 
+def active_distributions(queryset):
+    """Distributions that still count: those whose mirrored expense has not been cancelled."""
+    return queryset.exclude(expense_transaction__status=TransactionStatus.CANCELLED)
+
+
 def annotate_last_paid(project_labour_qs):
     """
     Add `last_paid` (date of the latest NON-CANCELLED payment to this labour on this
@@ -379,19 +427,44 @@ class ManagerFund(models.Model):
     payment_mode = models.CharField(max_length=20, choices=PaymentMode.choices)
     remarks = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Who recorded this fund (NULL for rows that predate this field).
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, editable=False,
+        related_name='manager_funds_recorded',
+    )
 
     class Meta:
         indexes = [
             models.Index(fields=['project']),
             models.Index(fields=['fund_date']),
         ]
+        constraints = [
+            models.CheckConstraint(check=models.Q(fund_amount__gt=0), name='managerfund_amount_positive'),
+        ]
 
     def __str__(self):
         return f'{self.manager.name} fund {self.fund_amount} @ {self.project.code}'
 
+    def clean(self):
+        """Rules shared by the API and Django admin. (Balance rules live in core/ledger.py.)"""
+        errors = {}
+        if self.fund_amount is not None and self.fund_amount <= 0:
+            errors['fund_amount'] = 'Fund amount must be greater than zero.'
+        if self.project_id and self.manager_id and not ProjectManager.objects.filter(
+                project_id=self.project_id, manager_id=self.manager_id).exists():
+            errors['manager'] = 'This manager is not assigned to this project.'
+        if self.project_id and self.given_by_owner_id and not ProjectOwner.objects.filter(
+                project_id=self.project_id, owner_id=self.given_by_owner_id).exists():
+            errors['given_by_owner'] = 'This owner does not belong to this project.'
+        if self.pk and self.fund_amount is not None and self.fund_amount < self.distributed_amount:
+            errors['fund_amount'] = 'Fund amount cannot be less than what has already been distributed from it.'
+        if errors:
+            raise ValidationError(errors)
+
     @property
     def distributed_amount(self):
-        total = self.distributions.aggregate(total=models.Sum('amount'))['total']
+        """Active distributions only: a cancelled mirrored expense gives the money back."""
+        total = active_distributions(self.distributions.all()).aggregate(total=models.Sum('amount'))['total']
         return total or ZERO
 
     @property
@@ -413,7 +486,8 @@ class ManagerLabourDistribution(models.Model):
     into expense totals anywhere - that would double count the same money.
     """
 
-    manager_fund = models.ForeignKey(ManagerFund, on_delete=models.CASCADE, related_name='distributions')
+    # PROTECT: a fund that has distributions can never be deleted (that would orphan their expenses).
+    manager_fund = models.ForeignKey(ManagerFund, on_delete=models.PROTECT, related_name='distributions')
     project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='manager_labour_distributions')
     manager = models.ForeignKey(Manager, on_delete=models.CASCADE, related_name='labour_distributions')
     date = models.DateField()
@@ -421,7 +495,14 @@ class ManagerLabourDistribution(models.Model):
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     remarks = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    # Who distributed it (NULL for rows that predate this field).
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.PROTECT, null=True, blank=True, editable=False,
+        related_name='manager_distributions_recorded',
+    )
 
+    # The one expense this distribution mirrors. A distribution counts against the manager's balance
+    # only while this expense is ACTIVE; cancelling it gives the money back (the row itself stays).
     expense_transaction = models.OneToOneField(
         ExpenseTransaction,
         on_delete=models.PROTECT,
@@ -436,11 +517,24 @@ class ManagerLabourDistribution(models.Model):
             models.Index(fields=['project']),
             models.Index(fields=['date']),
         ]
+        constraints = [
+            models.CheckConstraint(check=models.Q(amount__gt=0), name='managerlabourdistribution_amount_positive'),
+        ]
 
     def __str__(self):
         return f'{self.manager.name} -> {self.labour.name}: {self.amount}'
 
+    @property
+    def is_active(self):
+        return self.expense_transaction_id is None or self.expense_transaction.status == TransactionStatus.ACTIVE
+
     def save(self, *args, **kwargs):
+        # The API goes through core/ledger.py (which locks the balance and links the expense itself).
+        # This mirroring only runs for a distribution saved directly without an expense.
+        with transaction.atomic():
+            self._save_and_mirror(*args, **kwargs)
+
+    def _save_and_mirror(self, *args, **kwargs):
         is_new = self._state.adding
         super().save(*args, **kwargs)
 
@@ -461,7 +555,7 @@ class ManagerLabourDistribution(models.Model):
                 payment_mode=self.manager_fund.payment_mode,
                 description=f'Distributed by manager {self.manager.name} from fund #{self.manager_fund_id}',
                 remarks=self.remarks,
-                created_by=owner.user,
+                created_by=self.created_by or owner.user,
             )
             self.expense_transaction = expense
             super().save(update_fields=['expense_transaction'])

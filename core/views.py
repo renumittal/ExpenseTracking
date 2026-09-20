@@ -1,12 +1,15 @@
 import uuid
 
+from django.conf import settings
 from django.db import transaction
+from django.utils import timezone
 from django.db.models import F, Max, Sum
 from rest_framework import mixins, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.parsers import MultiPartParser
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -17,8 +20,10 @@ from .models import (
     ExpenseCategory,
     ExpenseTransaction,
     Labour,
+    Manager,
     ManagerFund,
     ManagerLabourDistribution,
+    Owner,
     PartyType,
     Project,
     ProjectLabour,
@@ -28,13 +33,29 @@ from .models import (
     ZERO,
     annotate_last_paid,
 )
-from .permissions import AdminOnly, RoleAllowed, get_role, is_admin
+from . import bills, ledger
+from .permissions import (
+    AdminOnly,
+    CAN_UPLOAD_BILL,
+    CAN_VIEW_BILL,
+    RoleAllowed,
+    can_cancel_distribution,
+    can_distribute_manager_fund,
+    can_view_manager_fund,
+    effective_permissions,
+    get_role,
+    has_permission,
+    is_admin,
+    is_owner,
+    is_project_member,
+)
 from .serializers import (
     ContractorContractSerializer,
     ContractorSerializer,
     ExpenseTransactionSerializer,
     LabourPaymentBatchSerializer,
     LabourSerializer,
+    ManagerDistributionBatchSerializer,
     ManagerFundSerializer,
     ManagerLabourDistributionSerializer,
     NewContractorSerializer,
@@ -85,11 +106,42 @@ class MeView(APIView):
     def get(self, request):
         user = request.user
         owner = getattr(user, 'owner_profile', None)
+        manager = getattr(user, 'manager_profile', None)
+        permissions, project_permissions = effective_permissions(user)
         return Response({
             'username': user.username,
             'role': get_role(user),
             'owner_id': owner.id if owner else None,
-            'name': owner.name if owner else user.get_username(),
+            'manager_id': manager.id if manager else None,
+            'name': owner.name if owner else manager.name if manager else user.get_username(),
+            'is_super_admin': is_admin(user),
+            # What the server will allow (the API enforces the same). The web app uses it to show/hide things.
+            'permissions': permissions,
+            'project_permissions': project_permissions,
+        })
+
+
+class ProjectPeopleView(APIView):
+    """
+    GET /projects/<id>/people/ -- the owners, managers and labour actually assigned to this project.
+    Read-only, built from the existing ProjectOwner / ProjectManager / ProjectLabour links. Only someone who
+    belongs to the project (or an admin) can ask; anyone else gets 404, so nothing about other projects leaks.
+    Mobile numbers are deliberately not included.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        project = Project.objects.filter(pk=pk).first()
+        if project is None or not is_project_member(request.user, project):
+            raise NotFound('Project not found.')
+        labour = ProjectLabour.objects.filter(project=project).select_related('labour').order_by('labour__name')
+        return Response({
+            'project': {'id': project.id, 'name': project.name, 'code': project.code},
+            'owners': list(Owner.objects.filter(owned_projects__project=project).order_by('name').values('id', 'name')),
+            'managers': list(Manager.objects.filter(managed_projects__project=project).order_by('name').values('id', 'name')),
+            'labour': [{'id': l.labour_id, 'name': l.labour.name, 'type': l.labour.type, 'is_active': l.is_active}
+                       for l in labour],
         })
 
 
@@ -281,57 +333,226 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
         instance.cancel(cancelled_by=request.user, reason=reason)
         return Response(self.get_serializer(instance).data)
 
+    @action(detail=True, methods=['get', 'post'], url_path='bill', parser_classes=[MultiPartParser])
+    def bill(self, request, pk=None):
+        """
+        Supplier bill, one per transaction (no replace / delete).
+
+        POST multipart {file}: needs canUploadBill. SUPPLIER + ACTIVE transactions only.
+        GET: needs canViewBill. Returns a short-lived signed URL, never the file or its path.
+
+        The permission is checked against the server-side RolePermission table, then the
+        transaction is looked up through the normal project-scoped queryset (404 otherwise).
+        """
+        needed = CAN_UPLOAD_BILL if request.method == 'POST' else CAN_VIEW_BILL
+        if not has_permission(request.user, needed):
+            raise PermissionDenied('You do not have permission to ' + ('upload' if request.method == 'POST' else 'view') + ' bills.')
+        instance = self.get_object()
+        if request.method == 'POST':
+            return self._upload_bill(request, instance)
+        return self._view_bill(instance)
+
+    def _upload_bill(self, request, instance):
+        if instance.expense_category != ExpenseCategory.SUPPLIER:
+            raise ValidationError('Bills can only be attached to supplier expenses.')
+        if instance.status != TransactionStatus.ACTIVE:
+            raise ValidationError('Bills cannot be attached to a cancelled expense.')
+        if instance.bill_path:
+            return Response({'detail': 'This expense already has a bill.'}, status=status.HTTP_409_CONFLICT)
+
+        uploaded = request.FILES.get('file')
+        try:
+            content_type, filename = bills.validate_bill_file(uploaded)
+        except bills.BillValidationError as exc:
+            raise ValidationError({'file': str(exc)})
+
+        path = bills.new_object_path(instance.project_id, instance.pk, content_type)
+        try:
+            bills.upload_object(path, uploaded.read(), content_type)
+        except bills.StorageNotConfigured:
+            return Response({'detail': 'Bill storage is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except bills.StorageError:
+            return Response({'detail': 'Could not store the bill. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        # Claim the single bill slot atomically: two simultaneous uploads cannot both win.
+        # update() (not save()) so the expense's own fields and modified_at are untouched.
+        try:
+            claimed = ExpenseTransaction.objects.filter(pk=instance.pk, bill_path='').update(
+                bill_path=path, bill_filename=filename, bill_content_type=content_type,
+                bill_size=uploaded.size, bill_uploaded_by=request.user, bill_uploaded_at=timezone.now(),
+            )
+        except Exception:
+            bills.delete_object(path)
+            raise
+        if not claimed:
+            bills.delete_object(path)
+            return Response({'detail': 'This expense already has a bill.'}, status=status.HTTP_409_CONFLICT)
+        instance.refresh_from_db()
+        return Response(self.get_serializer(instance).data, status=status.HTTP_201_CREATED)
+
+    def _view_bill(self, instance):
+        if not instance.bill_path:
+            return Response({'detail': 'This expense has no bill.'}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            url = bills.signed_url(instance.bill_path)
+        except bills.StorageNotConfigured:
+            return Response({'detail': 'Bill storage is not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        except bills.StorageError:
+            return Response({'detail': 'Could not open the bill. Please try again.'}, status=status.HTTP_502_BAD_GATEWAY)
+        return Response(
+            {
+                'url': url,
+                'expires_in': settings.BILL_URL_EXPIRY_SECONDS,
+                'filename': instance.bill_filename,
+                'content_type': instance.bill_content_type,
+            },
+            headers={'Cache-Control': 'no-store'},
+        )
+
 
 # ---------------------------------------------------------------------------
 # Manager-facing endpoints
 # ---------------------------------------------------------------------------
 
+def _visible_projects(user):
+    """Projects whose manager funds this user may see: all (admin) or the ones they own."""
+    return Project.objects.all() if is_admin(user) else Project.objects.filter(project_owners__owner__user=user)
+
+
+def _scope(qs, user):
+    """Admin: everything. Owner: their projects. Manager: only their own rows."""
+    if is_admin(user):
+        return qs
+    if is_owner(user):
+        return qs.filter(project__in=_visible_projects(user))
+    return qs.filter(manager__user=user)
+
+
+def _filter_by_params(qs, params):
+    if params.get('project'):
+        qs = qs.filter(project_id=params['project'])
+    if params.get('manager'):
+        qs = qs.filter(manager_id=params['manager'])
+    return qs
+
+
 class ManagerFundViewSet(viewsets.ModelViewSet):
-    """Admin: all funds. Manager: only funds received by themselves."""
+    """
+    Fund ledger: money an Owner gives a Manager for a project (this is NOT an expense).
+
+    Admin: all funds. Owner: funds on their projects. Manager: only their own funds (read-only).
+    Only an owner of the project (or admin) can record a fund; funds are never edited or deleted here.
+    """
 
     serializer_class = ManagerFundSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.MANAGER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
+    http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
-        user = self.request.user
-        if is_admin(user):
-            return ManagerFund.objects.all()
-        return ManagerFund.objects.filter(manager__user=user)
+        if not can_view_manager_fund(self.request.user):
+            raise PermissionDenied('You do not have permission to view manager funds.')
+        qs = ManagerFund.objects.select_related('manager', 'given_by_owner', 'project')
+        return _filter_by_params(_scope(qs, self.request.user), self.request.query_params)
+
+    def create(self, request, *args, **kwargs):
+        if not (is_admin(request.user) or is_owner(request.user)):
+            raise PermissionDenied('Only an owner can give a fund to a manager.')
+        return super().create(request, *args, **kwargs)
 
     def perform_create(self, serializer):
-        user = self.request.user
-        manager = serializer.validated_data['manager']
-        if not is_admin(user) and manager.user_id != user.id:
-            raise PermissionDenied('You may only record funds received by yourself.')
-        serializer.save()
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Per manager and project: total received, total distributed, available balance (from the database)."""
+        pairs = self.get_queryset().values_list('project_id', 'manager_id').distinct()
+        projects = {p.id: p for p in Project.objects.filter(id__in={p for p, _ in pairs})}
+        managers = {m.id: m for m in Manager.objects.filter(id__in={m for _, m in pairs})}
+        rows = [ledger.position(projects[p], managers[m]) for p, m in sorted(pairs)]
+        return Response({'summary': rows})
+
+    @action(detail=False, methods=['get'])
+    def statement(self, request):
+        """Fund history, distribution history and a date-wise ledger with running balance, per manager/project."""
+        pairs = self.get_queryset().values_list('project_id', 'manager_id').distinct()
+        projects = {p.id: p for p in Project.objects.filter(id__in={p for p, _ in pairs})}
+        managers = {m.id: m for m in Manager.objects.filter(id__in={m for _, m in pairs})}
+        return Response({'statements': [ledger.statement(projects[p], managers[m]) for p, m in sorted(pairs)]})
 
 
 class ManagerLabourDistributionViewSet(viewsets.ModelViewSet):
     """
-    Admin: all distributions. Manager: only distributions made by themselves.
+    A manager hands out money from their fund to labour. Everything goes through core/ledger.py: the balance
+    is checked under a lock, money is taken oldest fund first, and each distribution creates exactly one
+    LABOUR ExpenseTransaction. Rows are never edited or deleted; an owner cancels one instead.
 
-    create() also auto-creates the linked LABOUR ExpenseTransaction, handled
-    entirely by ManagerLabourDistribution.save() in models.py -- not duplicated here.
+    Admin: all. Owner: distributions on their projects (view + cancel). Manager: only their own.
     """
 
     serializer_class = ManagerLabourDistributionSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.MANAGER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):
-        user = self.request.user
-        if is_admin(user):
-            return ManagerLabourDistribution.objects.all()
-        return ManagerLabourDistribution.objects.filter(manager__user=user)
+        if not can_view_manager_fund(self.request.user):
+            raise PermissionDenied('You do not have permission to view manager funds.')
+        qs = ManagerLabourDistribution.objects.select_related(
+            'labour', 'manager', 'expense_transaction').order_by('-date', '-id')
+        return _filter_by_params(_scope(qs, self.request.user), self.request.query_params)
 
-    def perform_create(self, serializer):
-        user = self.request.user
-        manager_fund = serializer.validated_data['manager_fund']
-        if not is_admin(user) and manager_fund.manager.user_id != user.id:
-            raise PermissionDenied('You may only distribute from your own funds.')
-        serializer.save()
+    def _save_batch(self, request, data):
+        """Authorize, then save the whole batch (or nothing). Returns (payment_batch, rows)."""
+        if not can_distribute_manager_fund(request.user, data['project'], data['manager']):
+            raise PermissionDenied('Only the manager assigned to this project can distribute this fund.')
+        return ledger.distribute(
+            project=data['project'], manager=data['manager'], date=data['date'], remarks=data['remarks'],
+            payments=[(line['labour'], line['amount']) for line in data['payments']], actor=request.user,
+        )
+
+    def create(self, request, *args, **kwargs):
+        """Single distribution (kept for compatibility): one labour. The fund is picked by the server."""
+        body = request.data
+        ser = ManagerDistributionBatchSerializer(data={
+            'project': body.get('project'), 'manager': body.get('manager'), 'date': body.get('date'),
+            'remarks': body.get('remarks', ''), 'payments': [{'labour': body.get('labour'), 'amount': body.get('amount')}],
+        })
+        ser.is_valid(raise_exception=True)
+        batch, rows = self._save_batch(request, ser.validated_data)
+        data = self.get_serializer(rows[0]).data
+        data['allocations'] = [r.id for r in rows]        # more than one row when it was split across funds
+        return Response(data, status=status.HTTP_201_CREATED)
+
+    @action(detail=False, methods=['post'])
+    def batch(self, request):
+        """POST {project, manager, date, remarks?, payments: [{labour, amount}, ...]} -- all saved or none."""
+        ser = ManagerDistributionBatchSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        batch, rows = self._save_batch(request, data)
+        return Response({
+            'payment_batch': str(batch),
+            'total': sum((r.amount for r in rows), ZERO),
+            'distributions': ManagerLabourDistributionSerializer(rows, many=True).data,
+            'position': ledger.position(data['project'], data['manager']),
+        }, status=status.HTTP_201_CREATED)
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Owner / admin only. Cancels this one distribution: the amount returns to the manager's balance."""
+        distribution = self.get_object()
+        if not can_cancel_distribution(request.user, distribution.project):
+            raise PermissionDenied('Only an owner of this project can cancel a distribution.')
+        reason = request.data.get('remarks') or request.data.get('reason')
+        if not reason:
+            raise ValidationError({'remarks': 'A reason is required to cancel a distribution.'})
+        distribution = ledger.cancel_distribution(distribution, cancelled_by=request.user, reason=reason)
+        distribution.refresh_from_db()
+        return Response({
+            'distribution': self.get_serializer(distribution).data,
+            'position': ledger.position(distribution.project, distribution.manager),
+        })
 
 
 class ManagerSummaryView(APIView):

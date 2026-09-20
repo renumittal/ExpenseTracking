@@ -18,6 +18,7 @@ from .models import (
     ProjectManager,
     ProjectLabour,
     ProjectOwner,
+    RolePermission,
     Supplier,
     annotate_last_paid,
 )
@@ -161,11 +162,33 @@ class ManagerFundAdmin(admin.ModelAdmin):
     )
     list_filter = ('project', 'fund_date')
     search_fields = ('project__code', 'project__name', 'manager__name')
+    readonly_fields = ('created_by',)
+
+    def save_model(self, request, obj, form, change):
+        if not change:
+            obj.created_by = request.user
+        super().save_model(request, obj, form, change)
 
 
 @admin.register(ManagerLabourDistribution)
 class ManagerLabourDistributionAdmin(admin.ModelAdmin):
+    """Read-only history. Distributions are made through the API (core/ledger.py), which checks the balance
+    under a lock; adding or deleting them here would bypass that and unbalance the ledger."""
     list_display = ('project', 'manager', 'labour', 'date', 'amount', 'manager_fund')
     list_filter = ('project', 'date')
     search_fields = ('project__code', 'project__name', 'manager__name', 'labour__name')
-    readonly_fields = ('expense_transaction', 'created_at')
+    readonly_fields = ('expense_transaction', 'created_at', 'created_by')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(RolePermission)
+class RolePermissionAdmin(admin.ModelAdmin):
+    """Server-side permission matrix. ADMIN always has every permission regardless of these rows."""
+    list_display = ('permission', 'role', 'allowed')
+    list_filter = ('permission', 'role')
+    list_editable = ('allowed',)

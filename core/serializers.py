@@ -2,6 +2,7 @@ from decimal import Decimal
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from .models import (
     Contractor,
@@ -9,15 +10,17 @@ from .models import (
     ExpenseCategory,
     ExpenseTransaction,
     Labour,
+    Manager,
     ManagerFund,
     ManagerLabourDistribution,
     Owner,
     PaymentMode,
     Project,
     ProjectLabour,
+    ProjectManager,
     Supplier,
 )
-from .permissions import is_admin
+from .permissions import can_give_manager_fund, is_admin
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -31,6 +34,13 @@ class ProjectSerializer(serializers.ModelSerializer):
 
 
 class ExpenseTransactionSerializer(serializers.ModelSerializer):
+    # Bill metadata only. The storage path is never exposed; the file is fetched through
+    # expense-transactions/<id>/bill/ (which checks canViewBill).
+    has_bill = serializers.SerializerMethodField()
+
+    def get_has_bill(self, obj):
+        return bool(obj.bill_path)
+
     class Meta:
         model = ExpenseTransaction
         fields = [
@@ -38,8 +48,9 @@ class ExpenseTransactionSerializer(serializers.ModelSerializer):
             'party_type', 'labour', 'contractor_contract', 'supplier', 'payee_name',
             'paid_by_owner', 'amount', 'payment_mode', 'reference_no', 'description',
             'remarks', 'status', 'created_by', 'created_at', 'modified_by', 'modified_at',
+            'has_bill', 'bill_filename',
         ]
-        read_only_fields = ['status', 'created_by', 'created_at', 'modified_by', 'modified_at']
+        read_only_fields = ['status', 'created_by', 'created_at', 'modified_by', 'modified_at', 'bill_filename']
 
     def validate(self, attrs):
         """
@@ -65,45 +76,57 @@ class ExpenseTransactionSerializer(serializers.ModelSerializer):
 
 
 class ManagerFundSerializer(serializers.ModelSerializer):
+    """An Owner giving money to a Manager for a project (not an expense)."""
     distributed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    manager_name = serializers.CharField(source='manager.name', read_only=True)
+    given_by_owner_name = serializers.CharField(source='given_by_owner.name', read_only=True)
 
     class Meta:
         model = ManagerFund
         fields = [
-            'id', 'project', 'manager', 'fund_date', 'fund_amount', 'given_by_owner',
-            'payment_mode', 'remarks', 'created_at', 'distributed_amount', 'balance',
+            'id', 'project', 'manager', 'manager_name', 'fund_date', 'fund_amount', 'given_by_owner',
+            'given_by_owner_name', 'payment_mode', 'remarks', 'created_at', 'created_by',
+            'distributed_amount', 'balance',
         ]
-        read_only_fields = ['created_at']
+        read_only_fields = ['created_at', 'created_by']
+        extra_kwargs = {'fund_amount': {'min_value': Decimal('0.01')}}
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        user = getattr(request, 'user', None)
+        if user is not None and not can_give_manager_fund(user, attrs['project']):
+            raise PermissionDenied('Only an owner of this project can give a fund to a manager.')
+        if user is not None and not is_admin(user) and attrs['given_by_owner'].user_id != user.id:
+            raise serializers.ValidationError({'given_by_owner': 'You can only record funds given by yourself.'})
+        try:                                    # the model holds the shared rules (also used by Django admin)
+            ManagerFund(**{k: v for k, v in attrs.items()}).clean()
+        except DjangoValidationError as e:
+            raise serializers.ValidationError(e.message_dict)
+        return attrs
 
 
 class ManagerLabourDistributionSerializer(serializers.ModelSerializer):
+    """Read-only view of a distribution. Writes go through ManagerDistributionBatchSerializer + core/ledger.py."""
+    labour_name = serializers.CharField(source='labour.name', read_only=True)
+    manager_name = serializers.CharField(source='manager.name', read_only=True)
+    status = serializers.SerializerMethodField()
+    payment_batch = serializers.SerializerMethodField()
+
     class Meta:
         model = ManagerLabourDistribution
         fields = [
-            'id', 'manager_fund', 'project', 'manager', 'date', 'labour', 'amount',
-            'remarks', 'created_at', 'expense_transaction',
+            'id', 'manager_fund', 'project', 'manager', 'manager_name', 'date', 'labour', 'labour_name', 'amount',
+            'remarks', 'created_at', 'created_by', 'expense_transaction', 'status', 'payment_batch',
         ]
-        read_only_fields = ['created_at', 'expense_transaction']
+        read_only_fields = fields
 
-    def validate(self, attrs):
-        manager_fund = attrs.get('manager_fund') or getattr(self.instance, 'manager_fund', None)
-        project = attrs.get('project') or getattr(self.instance, 'project', None)
-        manager = attrs.get('manager') or getattr(self.instance, 'manager', None)
-        amount = attrs.get('amount', getattr(self.instance, 'amount', None))
+    def get_status(self, obj):
+        return 'ACTIVE' if obj.is_active else 'CANCELLED'
 
-        if manager_fund and project and manager_fund.project_id != project.id:
-            raise serializers.ValidationError({'project': 'project must match the manager_fund\'s project.'})
-        if manager_fund and manager and manager_fund.manager_id != manager.id:
-            raise serializers.ValidationError({'manager': 'manager must match the manager_fund\'s manager.'})
-
-        # Hard block: this is an internal cash advance, not a client-facing
-        # contract, so (unlike ContractorContract) we never allow overdrawing it.
-        if manager_fund and amount is not None and amount > manager_fund.balance:
-            raise serializers.ValidationError(
-                f'Distribution amount {amount} exceeds available fund balance {manager_fund.balance}.'
-            )
-        return attrs
+    def get_payment_batch(self, obj):
+        exp = obj.expense_transaction
+        return str(exp.payment_batch) if exp and exp.payment_batch else None
 
 
 class SupplierSerializer(serializers.ModelSerializer):
@@ -196,6 +219,39 @@ class LabourPaymentBatchSerializer(serializers.Serializer):
             link.labour_id: link
             for link in ProjectLabour.objects.filter(project=attrs['project'], labour__in=labours)
         }
+        missing = [l.name for l in labours if l.id not in links]
+        if missing:
+            raise serializers.ValidationError({'payments': f'Not a labour of this project: {", ".join(missing)}.'})
+        if not attrs['include_inactive']:
+            inactive = [l.name for l in labours if not links[l.id].is_active]
+            if inactive:
+                verb = 'is' if len(inactive) == 1 else 'are'
+                raise serializers.ValidationError({
+                    'payments': f'{", ".join(inactive)} {verb} inactive. Please select from Show Inactive.'
+                })
+        return attrs
+
+
+class ManagerDistributionBatchSerializer(serializers.Serializer):
+    """One manager distribution entry: a date and one amount per labourer. The fund is chosen by the server."""
+    project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all())
+    manager = serializers.PrimaryKeyRelatedField(queryset=Manager.objects.all())
+    date = serializers.DateField()
+    remarks = serializers.CharField(required=False, allow_blank=True, default='')
+    include_inactive = serializers.BooleanField(required=False, default=False)
+    payments = LabourPaymentLineSerializer(many=True, allow_empty=False)
+
+    def validate_payments(self, lines):
+        ids = [line['labour'].id for line in lines]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Each labour can appear only once in one entry.')
+        return lines
+
+    def validate(self, attrs):
+        if not ProjectManager.objects.filter(project=attrs['project'], manager=attrs['manager']).exists():
+            raise serializers.ValidationError({'manager': 'This manager is not assigned to this project.'})
+        labours = [line['labour'] for line in attrs['payments']]
+        links = {l.labour_id: l for l in ProjectLabour.objects.filter(project=attrs['project'], labour__in=labours)}
         missing = [l.name for l in labours if l.id not in links]
         if missing:
             raise serializers.ValidationError({'payments': f'Not a labour of this project: {", ".join(missing)}.'})

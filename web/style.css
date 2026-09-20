@@ -159,6 +159,17 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); outline: 
 .btn.danger { color: var(--red); border-color: var(--red); }
 @media (min-width: 720px) { .perm-desktop { display: block; } .perm-mobile { display: none; } }
 
+/* Manager Fund */
+.tot-grid { display: grid; gap: 10px; margin: 8px 0; }
+.tot-box { margin: 0; }
+.tot-box .big-total { font-size: 1.9rem; }
+.tot-box.ok { border-color: var(--green); background: #eef8f1; }
+.tot-box.ok .big-total { color: var(--green); }
+.amount.in { color: var(--green); }
+.amount.out { color: var(--red); }
+.item.cancelled .amount, .item.cancelled .who { text-decoration: line-through; opacity: .65; }
+@media (min-width: 720px) { .tot-grid { grid-template-columns: repeat(3, 1fr); } .tot-box .big-total { font-size: 1.6rem; } }
+
 /* Success */
 .success { text-align: center; padding-top: 24px; }
 .success .tick { font-size: 5rem; }

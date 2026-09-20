@@ -38,6 +38,7 @@
     { key: 'canViewReports',       group: 'view', label: 'View Reports',     roles: ALL },
     { key: 'canViewSuppliers',     group: 'view', label: 'View Suppliers',   roles: OWN },
     { key: 'canViewContractors',   group: 'view', label: 'View Contractors', roles: OWN },
+    { key: 'canViewManagerFund',   group: 'view', label: 'View Manager Fund', roles: OPS },
 
     { key: 'canAddExpense',          group: 'ops', label: 'Add Expense',            roles: OPS },
     { key: 'canEditExpense',         group: 'ops', label: 'Edit Expense',           roles: OPS },
@@ -46,6 +47,8 @@
     { key: 'canRecordLabourPayment', group: 'ops', label: 'Labour Payment',         roles: OPS },
     { key: 'canManageSuppliers',     group: 'ops', label: 'Manage Suppliers',       roles: OWN },
     { key: 'canManageContractors',   group: 'ops', label: 'Manage Contractors',     roles: OWN },
+    { key: 'canGiveManagerFund',     group: 'ops', label: 'Give Manager Fund',      roles: OWN },
+    { key: 'canDistributeManagerFund', group: 'ops', label: 'Distribute Manager Fund', roles: [R.SUPER_ADMIN, R.MANAGER] },
 
     { key: 'canManageProjectMembers',  group: 'project', label: 'Manage Project Members', roles: OWN },
     { key: 'canManageProjectSettings', group: 'project', label: 'Manage Project Settings', roles: OWN },
@@ -109,6 +112,7 @@
     project: 'canViewProjects', newproject: 'canCreateProject',
     users: 'canManageUsers', members: 'canManageProjectMembers', settings: SETTINGS_ANY,
     permissions: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
+    fund: 'canViewManagerFund', givefund: 'canGiveManagerFund', distribute: 'canDistributeManagerFund',
   };
   const reportPermission = key => REPORT_PERMISSION[key] || 'canViewReports';
   const CATEGORIES = ['LABOUR', 'CONTRACTOR', 'SUPPLIER', 'MISCELLANEOUS'];
@@ -128,6 +132,7 @@
     { id: 'labour',      hash: '#/report/LABOUR', icon: '👷', hi: 'मज़दूर',    en: 'Labour',      perm: 'canViewLabour' },
     { id: 'suppliers',   hash: '#/report/SUPPLIER', icon: '🚚', hi: 'सप्लायर', en: 'Suppliers',   perm: 'canViewSuppliers' },
     { id: 'contractors', hash: '#/report/CONTRACTOR', icon: '🧱', hi: 'ठेकेदार', en: 'Contractors', perm: 'canViewContractors' },
+    { id: 'fund',        hash: '#/fund',          icon: '💰', hi: 'फंड',       en: 'Manager Fund', perm: 'canViewManagerFund' },
     { id: 'users',       hash: '#/users',         icon: '👥', hi: 'यूज़र',      en: 'Users',       perm: 'canManageUsers' },
     { id: 'members',     hash: '#/members',       icon: '🤝', hi: 'सदस्य',      en: 'Members',     perm: 'canManageProjectMembers' },
     { id: 'settings',    hash: '#/settings',      icon: '⚙️', hi: 'सेटिंग',     en: 'Settings',    perm: SETTINGS_ANY },

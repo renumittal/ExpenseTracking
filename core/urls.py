@@ -20,6 +20,7 @@ urlpatterns = [
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
     path('me/', views.MeView.as_view(), name='me'),
     path('manager-summary/', views.ManagerSummaryView.as_view(), name='manager-summary'),
+    path('projects/<int:pk>/people/', views.ProjectPeopleView.as_view(), name='project-people'),
 
     path('reports/category-expense/', reports.CategoryExpenseReportView.as_view(), name='report-category-expense'),
     path('reports/contractor/', reports.ContractorReportView.as_view(), name='report-contractor'),

@@ -51,10 +51,18 @@
   const shortDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${String(d).padStart(2, '0')}-${EN_MONTHS[m - 1]}-${y}` : ''; };
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
 
-  const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser') };
+  const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser'), fundForbidden: false };
   const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
   // The one permission check used everywhere: can('canAddExpense'). Role names live only in authz.js.
-  const can = perm => Authz.can(state.user, state.project && state.project.id, perm);
+  // The server decides these (it returns them in /me/); the local matrix can only hide more, never grant more.
+  const SERVER_PERMS = ['canViewManagerFund', 'canGiveManagerFund', 'canDistributeManagerFund', 'canUploadBill', 'canViewBill'];
+  const serverAllows = perm => {
+    const me = state.me;
+    if (!me || !me.permissions) return true;                                  // an older server: nothing to check
+    if (state.project && me.project_permissions) return (me.project_permissions[String(state.project.id)] || []).includes(perm);
+    return !!me.permissions[perm];
+  };
+  const can = perm => Authz.can(state.user, state.project && state.project.id, perm) && (!SERVER_PERMS.includes(perm) || serverAllows(perm));
   const canAny = perms => Authz.allows(perms, can);               // a screen may need one permission, any of several, or a rule
   const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
   const noProject = () => can('canCreateProject')
@@ -107,17 +115,38 @@
 
   function logoutLocal() {
     store.del('token'); store.del('projectId'); store.del('demoUser');
-    Object.assign(state, { token: null, me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: null });
+    Object.assign(state, { token: null, me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: null, fundForbidden: false });
   }
 
   // ---------- data loading ----------
   async function loadBasics() {
     if (state.me) return;
     const me = await api('me/');
-    const projects = me.owner_id ? await api('projects/') : [];
+    const projects = me.owner_id ? await api('projects/') : me.role === 'MANAGER' ? await managerProjects(me) : [];
     state.me = me;
     state.realProjects = projects.results || projects;
     applyUser();
+  }
+
+  // A manager cannot list projects (owner-only API): /me/ says which projects they are on, and the people
+  // endpoint (open to project members) gives each one's name. Older servers: use the projects their fund shows.
+  async function managerProjects(me) {
+    if (me.project_permissions) {
+      return Promise.all(Object.keys(me.project_permissions).map(async id => {
+        const p = (await api(`projects/${id}/people/`)).project;
+        return { id: p.id, name: p.name, code: p.code };
+      }));
+    }
+    try {
+      const seen = new Map();
+      ((await api('manager-funds/summary/')).summary || []).forEach(r =>
+        seen.set(r.project_id, { id: r.project_id, name: r.project_code, code: r.project_code }));
+      return [...seen.values()];
+    } catch (e) {
+      if (e.status !== 403) throw e;
+      state.fundForbidden = true;
+      return [];
+    }
   }
 
   // Build the current user and keep only the projects assigned to them.
@@ -268,6 +297,7 @@
         ${canAdd() ? '<a class="btn green big" href="#/add"><span class="ico">➕</span><span>खर्च डालें<span class="sub">Add Expense</span></span></a>' : ''}
         ${can('canViewExpenses') ? '<a class="btn big" href="#/list"><span class="ico">📋</span><span>खर्च देखें<span class="sub">View Expenses</span></span></a>' : ''}
         ${can('canViewProjects') ? '<a class="btn big" href="#/project"><span class="ico">🏠</span><span>मेरा प्रोजेक्ट<span class="sub">My Project</span></span></a>' : ''}
+        ${can('canViewManagerFund') ? '<a class="btn big" href="#/fund"><span class="ico">💰</span><span>मैनेजर फंड<span class="sub">Manager Fund</span></span></a>' : ''}
         ${can('canViewReports') ? '<a class="btn big" href="#/reports"><span class="ico">📊</span><span>हिसाब देखें<span class="sub">Total Expense</span></span></a>' : ''}
       </div>`;
   }
@@ -1285,6 +1315,256 @@
     };
   }
 
+  // ----- Manager Fund: Owner --fund--> Manager --distribution--> Labour. All numbers come from the server. -----
+  let fundFlash = '', fundManager = null;                       // fundManager = the manager whose position is shown
+  // Money as whole paise (integers), so an amount never picks up floating-point errors.
+  const toPaise = t => {
+    const m = /^(\d*)(?:\.(\d{0,2}))?$/.exec(String(t || '').trim());
+    return m ? Number(m[1] || 0) * 100 + Number((m[2] || '').padEnd(2, '0') || 0) : 0;
+  };
+  const fromPaise = c => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}`;
+  const modeName = k => (MODES.find(m => m.key === k) || { en: k }).en;
+  const fundNoAccess = `<div class="empty"><div class="ico">🔒</div><h2>इस फंड को देखने की अनुमति नहीं है</h2><p>You do not have permission to view Manager Fund.</p></div>`;
+  const fundErr = e => (e && e.status === 403 ? 'You do not have permission for this Manager Fund action.' : (serverMsg(e) || friendly(e)));
+
+  async function screenFund() {
+    chrome('fund', '#/home');
+    if (state.fundForbidden) { $view.innerHTML = fundNoAccess; return; }
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    loading();
+    let stmts;
+    try { stmts = (await api(`manager-funds/statement/?project=${state.project.id}`)).statements; }
+    catch (e) { $view.innerHTML = e.status === 403 ? fundNoAccess : errBox(fundErr(e)); return; }
+    const flash = fundFlash; fundFlash = '';
+    const projectPicker = state.projects.length > 1
+      ? `<select id="fproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+    const actions = `${can('canGiveManagerFund') ? '<a class="btn green" href="#/givefund">➕ फंड दें <span class="sub">Give Fund</span></a>' : ''}
+      ${can('canDistributeManagerFund') && stmts.length ? '<a class="btn" href="#/distribute">📤 मज़दूरों को दें <span class="sub">Distribute to Labour</span></a>' : ''}`;
+    const head = `<h1>💰 मैनेजर फंड <small>Manager Fund</small></h1>
+      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>${projectPicker}
+      ${flash ? `<div class="msg ok" role="status">${esc(flash)}</div>` : ''}`;
+    const bindProject = () => {
+      const sel = document.getElementById('fproj');
+      if (sel) sel.onchange = () => { state.project = state.projects.find(p => p.id === Number(sel.value)); store.set('projectId', state.project.id); state.names = null; fundManager = null; screenFund(); };
+    };
+    if (!stmts.length) {
+      $view.innerHTML = `${head}<div class="empty"><div class="ico">📭</div><p>इस प्रोजेक्ट में अभी किसी मैनेजर को फंड नहीं मिला है.<br><small>No fund has been given to a manager on this project yet.</small></p></div>${actions}`;
+      bindProject();
+      return;
+    }
+    let cur = stmts.find(x => x.position.manager_id === fundManager) || stmts[0];
+    fundManager = cur.position.manager_id;
+
+    const owners = new Map(cur.funds.map(f => [f.id, f.given_by_owner_name]));
+    const pill = st => `<span class="pill ${st === 'ACTIVE' ? '' : 'warn'}">${st === 'ACTIVE' ? 'Active' : 'Cancelled — not counted'}</span>`;
+    const draw = () => {
+      const p = cur.position, bal = Number(p.available_balance);
+      $view.innerHTML = `${head}
+        ${stmts.length > 1 ? `<h2>मैनेजर <small>Manager Summary</small></h2>` + stmts.map(x => `
+          <button type="button" class="card pick ${x.position.manager_id === fundManager ? 'on' : ''}" data-m="${x.position.manager_id}">
+            <div class="row"><b>${esc(x.position.manager_name)}</b><span class="amount">${money(x.position.available_balance)}</span></div>
+            <div class="muted">मिला ${money(x.position.total_received)} · बाँटा ${money(x.position.total_distributed)} · बचा ${money(x.position.available_balance)}</div></button>`).join('') : ''}
+        <p class="muted">मैनेजर: <b>${esc(p.manager_name)}</b></p>
+        <div class="tot-grid">
+          <div class="card tot-box"><div class="muted">कुल फंड मिला <small>Total Fund Received</small></div><div class="big-total">${money(p.total_received)}</div><div class="muted">मालिक → मैनेजर <small>Owner → Manager</small></div></div>
+          <div class="card tot-box"><div class="muted">कुल बाँटा गया <small>Total Distributed</small></div><div class="big-total">${money(p.total_distributed)}</div><div class="muted">मैनेजर → मज़दूर <small>Manager → Labour</small></div></div>
+          <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">बचा हुआ फंड <small>Available Balance</small></div><div class="big-total">${money(p.available_balance)}</div><div class="muted">= मिला − बाँटा <small>Received − active distribution</small></div></div>
+        </div>
+        ${p.total_received > 0 && bal === 0 ? '<div class="msg info">पूरा फंड बाँटा जा चुका है — अब कोई बचत नहीं. <small>No balance left.</small></div>' : ''}
+        ${actions}
+        <h2>📥 फंड मिला <small>Fund Received History</small></h2>` +
+        (cur.funds.map(f => `<div class="card item"><div class="row"><span class="who">${money(f.amount)}</span><span class="meta">${shortDate(f.date)}</span></div>
+          <div class="meta">मालिक: <b>${esc(f.given_by_owner_name)}</b> · ${esc(modeName(f.payment_mode))}</div>
+          ${f.remarks ? `<div class="note">📝 ${esc(f.remarks)}</div>` : ''}</div>`).join('') || '<div class="empty">अभी कोई फंड नहीं मिला.</div>') +
+        `<h2>📤 मज़दूरों को दिया <small>Labour Distribution History</small></h2>` +
+        (cur.distributions.slice().reverse().map(d => `<div class="card item ${d.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${esc(d.labour_name)}</span><span class="amount">${money(d.amount)}</span></div>
+          <div class="meta">${shortDate(d.date)} · फंड #${d.manager_fund_id} (${esc(owners.get(d.manager_fund_id) || '—')}) ${pill(d.status)}</div>
+          ${d.remarks ? `<div class="note">📝 ${esc(d.remarks)}</div>` : ''}</div>`).join('') || '<div class="empty">अभी किसी मज़दूर को नहीं दिया.</div>') +
+        `<h2>🧾 हिसाब-किताब <small>Running Statement</small></h2>
+        <p class="muted">📥 फंड = मैनेजर को मिला पैसा · 📤 = मैनेजर ने मज़दूर को दिया · रद्द किया हुआ जोड़ा नहीं जाता.</p>` +
+        (cur.ledger.map(e => `<div class="card item ${e.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${e.kind === 'FUND' ? '📥' : '📤'} ${esc(e.label)}</span>
+          <span class="amount ${e.kind === 'FUND' ? 'in' : 'out'}">${e.kind === 'FUND' ? '+' : '−'} ${money(e.amount)}</span></div>
+          <div class="row meta"><span>${shortDate(e.date)} ${e.status === 'ACTIVE' ? '' : pill(e.status)}</span><span>बचा: <b>${money(e.running_balance)}</b></span></div></div>`).join('') || '<div class="empty">अभी कुछ नहीं.</div>');
+      bindProject();
+      $view.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { fundManager = Number(b.dataset.m); cur = stmts.find(x => x.position.manager_id === fundManager); draw(); window.scrollTo(0, 0); });
+    };
+    draw();
+  }
+
+  // Give Fund (owner / admin). The people come from the project's own assignments; the server re-checks everything.
+  async function screenGiveFund() {
+    chrome('fund', '#/fund');
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    loading();
+    let people;
+    try { people = await api(`projects/${state.project.id}/people/`); }
+    catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
+    const onBehalf = state.user.allProjects;          // an admin may record a fund on behalf of a project owner
+    const options = list => list.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
+    const title = `<h1>➕ फंड दें <small>Give Fund</small></h1>
+      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b> · मालिक → मैनेजर. यह खर्च नहीं है.</p>`;
+    if (!people.managers.length) {
+      $view.innerHTML = `${title}<div class="msg info">इस प्रोजेक्ट में अभी कोई मैनेजर नहीं जुड़ा है.<br><small>No manager is assigned to this project yet.</small></div>
+        <a class="btn line" href="#/fund">← वापस <span class="sub">Back</span></a>`;
+      return;
+    }
+    $view.innerHTML = `${title}<div id="gmsg"></div>
+      <form id="gf" novalidate>
+        <label for="g-mgr">मैनेजर <small>Manager</small> *</label>
+        <select id="g-mgr"><option value="">— चुनिए —</option>${options(people.managers)}</select>
+        ${onBehalf ? `<label for="g-own">किस मालिक ने दिया <small>Given by owner</small> *</label>
+          <select id="g-own"><option value="">— चुनिए —</option>${options(people.owners)}</select>`
+          : `<p class="muted">दिया: <b>${esc(state.me.name)}</b></p>`}
+        <label for="g-amt">राशि <small>Amount</small> *</label>
+        <div class="rupee"><span>₹</span><input id="g-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0"></div>
+        <label for="g-date">तारीख <small>Date</small> *</label><input id="g-date" type="date" value="${today()}">
+        <label for="g-mode">कैसे दिया <small>Payment mode</small></label>
+        <select id="g-mode">${MODES.map(m => `<option value="${m.key}">${m.hi} (${m.en})</option>`).join('')}</select>
+        <label for="g-note">जानकारी <small>Remarks (optional)</small></label><input id="g-note" type="text" autocomplete="off">
+        <button class="btn green" type="submit" id="g-save">💾 फंड सेव करें <span class="sub">SAVE FUND</span></button>
+        <a class="btn line" href="#/fund">रद्द करें <span class="sub">Cancel</span></a>
+      </form>`;
+    const $ = id => document.getElementById(id);
+    $('g-amt').oninput = e => { e.target.value = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); };
+    $('gf').onsubmit = async ev => {
+      ev.preventDefault();
+      const bad = t => { $('gmsg').innerHTML = errBox(t); window.scrollTo(0, 0); };
+      const manager = Number($('g-mgr').value), owner = onBehalf ? Number($('g-own').value) : state.me.owner_id;
+      const cents = toPaise($('g-amt').value);
+      if (!manager) return bad('कृपया मैनेजर चुनिए. (Choose a manager.)');
+      if (!owner) return bad('कृपया मालिक चुनिए. (Choose the owner.)');
+      if (!(cents > 0)) return bad('कृपया राशि भरें (0 से ज़्यादा). (Amount must be greater than zero.)');
+      if (cents >= 1e12) return bad('राशि बहुत बड़ी है। कृपया जाँच लें.');
+      if (!$('g-date').value) return bad('कृपया तारीख चुनिए.');
+      $('g-save').disabled = true; $('gmsg').innerHTML = '';
+      try {
+        await api('manager-funds/', { method: 'POST', body: {
+          project: state.project.id, manager, given_by_owner: owner, fund_amount: fromPaise(cents),
+          fund_date: $('g-date').value, payment_mode: $('g-mode').value, remarks: $('g-note').value.trim() } });
+      } catch (e) { $('g-save').disabled = false; bad(fundErr(e)); return; }
+      fundFlash = 'फंड सेव हो गया. (Fund saved.)'; fundManager = manager;
+      location.hash = '#/fund';
+    };
+  }
+
+  // Distribute to Labour: several labourers, one amount each, saved as ONE batch (all or nothing) by the server.
+  // The screen shows the balance and stops an over-spend early; the server still makes the final decision.
+  async function screenDistribute() {
+    chrome('fund', '#/fund');
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    loading();
+    let people;
+    try { people = await api(`projects/${state.project.id}/people/`); }
+    catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
+    const own = state.me.manager_id;                          // a manager distributes only their own fund
+    const managers = own ? people.managers.filter(m => m.id === own) : people.managers;
+    const back = '<a class="btn line" href="#/fund">← फंड देखें <span class="sub">Back to Manager Fund</span></a>';
+    const title = `<h1>📤 मज़दूरों को दें <small>Distribute to Labour</small></h1>
+      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>`;
+    if (!managers.length) { $view.innerHTML = `${title}<div class="msg info">कोई मैनेजर नहीं मिला. <small>No manager found for this project.</small></div>${back}`; return; }
+    let manager = managers.find(m => m.id === fundManager) || managers[0];
+    const picked = new Set(), amt = {};
+    let q = '', showInactive = false, available = 0, saving = false;
+
+    $view.innerHTML = `${title}
+      ${state.projects.length > 1 ? `<select id="dproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
+      <div id="dmsg"></div>
+      <form id="df" novalidate>
+        ${managers.length > 1 ? `<label for="d-mgr">मैनेजर <small>Manager</small></label><select id="d-mgr">${managers.map(m => `<option value="${m.id}" ${m.id === manager.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`
+          : `<p class="muted">मैनेजर: <b>${esc(manager.name)}</b></p>`}
+        <div class="card tot-box"><div class="muted">उपलब्ध फंड <small>Available Balance</small></div><div class="big-total" id="d-avail">…</div><div class="muted" id="d-note"></div></div>
+        <label for="d-date">तारीख <small>Date</small> *</label><input id="d-date" type="date" value="${today()}">
+        <div class="q">किन मज़दूरों को दिया? <small>Labour &amp; amounts</small> <small id="d-count"></small></div>
+        <input id="d-q" type="text" autocomplete="off" placeholder="🔍 मज़दूर खोजिए (Search Labour)">
+        <label class="lab-inact"><input type="checkbox" id="d-inact"> पुराने / काम बंद मज़दूर भी दिखाएँ <small>Show Inactive</small></label>
+        <div id="dlist"></div>
+        <div class="card lab-total"><div class="row"><span>इस बार का कुल <small>Total This Distribution</small></span><span class="amount" id="d-total">₹ 0</span></div>
+          <div class="row"><span>उपलब्ध फंड <small>Available Balance</small></span><span class="amount" id="d-avail2">₹ 0</span></div>
+          <div class="row"><span>बाँटने के बाद बचेगा <small>Balance After Distribution</small></span><span class="amount" id="d-after">₹ 0</span></div></div>
+        <div class="field-error" id="d-warn"></div>
+        <label for="d-note-in">जानकारी <small>Remarks (optional)</small></label><input id="d-note-in" type="text" autocomplete="off">
+        <button class="btn green" type="submit" id="d-save">💾 बाँट दें <span class="sub">SAVE DISTRIBUTION</span></button>
+        <a class="btn line" href="#/fund">रद्द करें <span class="sub">Cancel</span></a>
+      </form>`;
+    const $ = id => document.getElementById(id);
+    const sum = () => [...picked].reduce((t, id) => t + toPaise(amt[id]), 0);
+    const problem = () => {
+      if (!picked.size) return 'कम से कम एक मज़दूर चुनिए.';
+      if ([...picked].some(id => !(toPaise(amt[id]) > 0))) return 'चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).';
+      if (sum() > available) return 'कुल राशि उपलब्ध फंड से ज़्यादा है — घटाइए. (Total is more than the available balance.)';
+      return '';
+    };
+    function update() {
+      const total = sum(), after = available - total;
+      $('d-avail').textContent = money(available / 100); $('d-avail2').textContent = money(available / 100);
+      $('d-total').textContent = money(total / 100); $('d-after').textContent = money(after / 100);
+      $('d-after').classList.toggle('out', after < 0);
+      $('d-count').textContent = picked.size ? `(${picked.size} चुने)` : '';
+      $('d-warn').textContent = total > available ? problem() : '';
+      $('d-save').disabled = saving || !!problem();
+    }
+    function drawRows() {
+      const rows = people.labour.filter(l => (l.is_active || showInactive || picked.has(l.id)) && (!q || l.name.toLowerCase().includes(q)));
+      $('dlist').innerHTML = rows.length ? rows.map(l => `
+        <div class="lab-row ${picked.has(l.id) ? 'on' : ''}" data-id="${l.id}">
+          <label class="lab-pick"><input type="checkbox" class="lab-chk" ${picked.has(l.id) ? 'checked' : ''}>
+            <span class="lab-name">${esc(l.name)}${l.type ? ` <small>${esc(l.type)}</small>` : ''} ${l.is_active ? '' : '<span class="pill warn">काम बंद</span>'}</span></label>
+          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="${esc(l.name)} राशि" value="${esc(amt[l.id] || '')}"></span>
+        </div>`).join('') : '<div class="msg info">इस प्रोजेक्ट में कोई मज़दूर नहीं मिला. <small>No labour found.</small></div>';
+    }
+    async function loadBalance() {
+      try {
+        const r = await api(`manager-funds/summary/?project=${state.project.id}&manager=${manager.id}`);
+        const row = (r.summary || [])[0];
+        available = row ? toPaise(row.available_balance) : 0;
+        $('d-note').textContent = row ? '' : 'इस मैनेजर को अभी कोई फंड नहीं मिला. (No fund given yet.)';
+      } catch (e) { available = 0; $('dmsg').innerHTML = errBox(fundErr(e)); }
+      update();
+    }
+    $('dlist').onchange = e => {
+      if (!e.target.classList.contains('lab-chk')) return;
+      const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
+      if (e.target.checked) { picked.add(id); row.classList.add('on'); row.querySelector('.lab-a').focus(); } else { picked.delete(id); row.classList.remove('on'); }
+      $('dmsg').innerHTML = ''; update();
+    };
+    $('dlist').oninput = e => {
+      if (!e.target.classList.contains('lab-a')) return;
+      const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
+      const [whole, ...rest] = e.target.value.replace(/[^0-9.]/g, '').split('.');
+      e.target.value = whole.slice(0, 9) + (rest.length ? '.' + rest.join('').slice(0, 2) : '');
+      amt[id] = e.target.value;
+      if (e.target.value) { picked.add(id); row.classList.add('on'); row.querySelector('.lab-chk').checked = true; }
+      $('dmsg').innerHTML = ''; update();
+    };
+    $('d-q').oninput = e => { q = e.target.value.trim().toLowerCase(); drawRows(); };
+    $('d-inact').onchange = e => { showInactive = e.target.checked; drawRows(); };
+    if ($('dproj')) $('dproj').onchange = () => { state.project = state.projects.find(p => p.id === Number($('dproj').value)); store.set('projectId', state.project.id); state.names = null; fundManager = null; screenDistribute(); };
+    if ($('d-mgr')) $('d-mgr').onchange = e => { manager = managers.find(m => m.id === Number(e.target.value)); loadBalance(); };
+    $('df').onsubmit = async ev => {
+      ev.preventDefault();
+      if (saving) return;
+      const bad = t => { $('dmsg').innerHTML = errBox(t); window.scrollTo(0, 0); };
+      if (problem()) return bad(problem());
+      if (!$('d-date').value) return bad('कृपया तारीख चुनिए.');
+      const lines = people.labour.filter(l => picked.has(l.id));
+      saving = true; update(); $('dmsg').innerHTML = '';
+      try {
+        const r = await api('manager-labour-distributions/batch/', { method: 'POST', body: {
+          project: state.project.id, manager: manager.id, date: $('d-date').value, remarks: $('d-note-in').value.trim(),
+          include_inactive: lines.some(l => !l.is_active),
+          payments: lines.map(l => ({ labour: l.id, amount: fromPaise(toPaise(amt[l.id])) })) } });
+        fundFlash = `बँट गया: ${money(r.total)} — ${lines.length} मज़दूर, एक बैच में. (Distribution saved.)`;
+        fundManager = manager.id;
+        location.hash = '#/fund';
+      } catch (e) {
+        saving = false;
+        bad(fundErr(e));
+        await loadBalance();                         // the balance may have changed: show the truth
+      }
+    };
+    drawRows(); update(); loadBalance();
+  }
+
   // ---------- router ----------
   async function route() {
     const [path, qs] = (location.hash.replace(/^#/, '') || '/home').split('?');
@@ -1292,7 +1572,7 @@
     if (!state.token) { if (path !== '/login') { location.hash = '#/login'; return; } return screenLogin(); }
     if (path === '/login') { location.hash = '#/home'; return; }
     try { await loadBasics(); } catch (e) { if (e.kind !== 'auth') { chrome('blocked'); $view.innerHTML = errBox(friendly(e)); } return; }
-    if (!state.me.owner_id) return screenBlocked();
+    if (!state.me.owner_id && state.me.role !== 'MANAGER') return screenBlocked();
 
     const [, page, arg] = path.split('/');
     if (page !== 'permissions' && permDraft) {          // never drop unsaved permission edits silently
@@ -1314,6 +1594,9 @@
       case 'settings': return screenSettings();
       case 'permissions': return screenPermissions();
       case 'newproject': return screenNewProject();
+      case 'fund': return screenFund();
+      case 'givefund': return screenGiveFund();
+      case 'distribute': return screenDistribute();
       case 'resetpw': return screenResetPassword(arg);
       default: return screenHome();
     }

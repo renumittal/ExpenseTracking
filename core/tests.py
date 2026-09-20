@@ -1,8 +1,11 @@
 from datetime import date, timedelta
+from unittest import mock
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.db import connection
+from django.test import override_settings
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from rest_framework import status
@@ -23,8 +26,10 @@ from .models import (
     Profile,
     Project,
     ProjectLabour,
+    ProjectManager,
     ProjectOwner,
     Role,
+    RolePermission,
     Supplier,
     Labour,
     TransactionStatus,
@@ -113,10 +118,14 @@ class RoleBasedAccessTests(APITestCase):
         self.assertEqual(codes, {'A'})
         self.assertNotIn('B', codes)
 
-    def test_owner_cannot_access_manager_funds(self):
+    def test_owner_sees_manager_funds_of_own_projects_only(self):
+        # Owners now view the funds given on THEIR projects (never another owner's project).
         self.auth_as(self.owner_a_user)
         response = self.client.get('/api/manager-funds/')
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.fund.id})
+        self.assertNotIn(self.other_fund.id, ids)
 
     # -- Admin: full access --------------------------------------------------
 
@@ -157,8 +166,10 @@ class ExpenseApiTests(APITestCase):
         self.manager_user = User.objects.create_user(username='manager_1', password='pass12345')
         Profile.objects.create(user=self.manager_user, role=Role.MANAGER)
         self.manager = Manager.objects.create(user=self.manager_user, name='Manager 1')
+        ProjectManager.objects.create(project=self.project, manager=self.manager)   # a manager must be on the project
 
         self.labour = Labour.objects.create(name='Ramu')
+        ProjectLabour.objects.create(project=self.project, labour=self.labour)      # ...and the labour too
         self.contractor = Contractor.objects.create(name='Build Co')
 
     def auth_as(self, user):
@@ -1201,3 +1212,268 @@ class BackfillMigrationTests(TransactionTestCase):
         self.assertNotIn('NoPayments', links)
         self.assertEqual((ExpenseTransaction.objects.count(), Labour.objects.count()), before)
         self.assertFalse(ExpenseTransaction.objects.exclude(payment_batch=None).exists())
+
+
+PNG = b'\x89PNG\r\n\x1a\n' + b'0' * 64
+JPG = b'\xff\xd8\xff\xe0' + b'0' * 64
+PDF = b'%PDF-1.4\n' + b'0' * 64
+
+
+@override_settings(SUPABASE_URL='https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY='k', SUPABASE_BILLS_BUCKET='supplier-bills')
+class SupplierBillTests(APITestCase):
+    """Bill upload / view: server-side RolePermission is the authority; Supabase is mocked."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.other_project = Project.objects.create(name='Plot 9', code='P9')
+        self.owner_user = self.make_user('own', Role.OWNER)
+        self.owner = Owner.objects.create(user=self.owner_user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        self.admin_user = self.make_user('adm', Role.ADMIN)
+        self.stranger = self.make_user('stranger', Role.OWNER)
+        stranger_owner = Owner.objects.create(user=self.stranger, name='Other')
+        ProjectOwner.objects.create(project=self.other_project, owner=stranger_owner)
+        self.manager_user = self.make_user('mgr', Role.MANAGER)
+        self.supplier = Supplier.objects.create(name='Sharma', mobile='9876543210')
+        self.txn = self.supplier_txn()
+
+        patches = {
+            'upload': mock.patch('core.bills.upload_object'),
+            'delete': mock.patch('core.bills.delete_object'),
+            'sign': mock.patch('core.bills.signed_url', return_value='https://x.supabase.co/signed?token=t'),
+        }
+        self.mocks = {k: p.start() for k, p in patches.items()}
+        for p in patches.values():
+            self.addCleanup(p.stop)
+
+    def make_user(self, name, role):
+        user = User.objects.create_user(username=name, password='pass12345')
+        Profile.objects.create(user=user, role=role)
+        return user
+
+    def login(self, user):
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.get_or_create(user=user)[0].key)
+
+    def supplier_txn(self, **kw):
+        fields = dict(
+            project=self.project, expense_date='2026-09-20', expense_category=ExpenseCategory.SUPPLIER,
+            expense_type='Supplier Payment', party_type=PartyType.SUPPLIER, supplier=self.supplier,
+            paid_by_owner=self.owner, amount=Decimal('1000.00'), payment_mode=PaymentMode.UPI,
+            created_by=self.owner_user)
+        fields.update(kw)
+        return ExpenseTransaction.objects.create(**fields)
+
+    def url(self, txn=None):
+        return f'/api/expense-transactions/{(txn or self.txn).id}/bill/'
+
+    def upload(self, data=PNG, name='bill.png', txn=None):
+        return self.client.post(self.url(txn), {'file': SimpleUploadedFile(name, data)}, format='multipart')
+
+    def set_perm(self, role, permission, allowed):
+        RolePermission.objects.update_or_create(role=role, permission=permission, defaults={'allowed': allowed})
+
+    # ---- defaults / seed ----
+    def test_seeded_defaults(self):
+        got = {(r.role, r.permission): r.allowed for r in RolePermission.objects.all()}
+        for perm in ('canUploadBill', 'canViewBill'):
+            self.assertEqual([got[(r, perm)] for r in ('ADMIN', 'OWNER', 'MANAGER', 'VIEWER')], [True, True, False, False])
+
+    # ---- upload ----
+    def test_owner_uploads_each_allowed_type(self):
+        self.login(self.owner_user)
+        for i, (data, name, ctype) in enumerate([(PNG, 'a.png', 'image/png'), (JPG, 'a.JPG', 'image/jpeg'),
+                                                  (JPG, 'a.jpeg', 'image/jpeg'), (PDF, 'a.pdf', 'application/pdf')]):
+            txn = self.supplier_txn()
+            r = self.upload(data, name, txn)
+            self.assertEqual(r.status_code, 201, r.data)
+            txn.refresh_from_db()
+            self.assertEqual(txn.bill_content_type, ctype)
+            self.assertEqual(txn.bill_uploaded_by, self.owner_user)
+            self.assertTrue(txn.bill_path.startswith(f'bills/{self.project.id}/{txn.id}/'))
+            self.assertNotIn('a.', txn.bill_path)   # user filename is never the storage key
+        self.assertTrue(r.data['has_bill'])
+        self.assertEqual(r.data['bill_filename'], 'a.pdf')
+        self.assertNotIn('bill_path', r.data)
+
+    def test_admin_can_upload(self):
+        self.login(self.admin_user)
+        self.assertEqual(self.upload().status_code, 201)
+
+    def test_upload_does_not_change_expense(self):
+        self.login(self.owner_user)
+        before = ExpenseTransaction.objects.values('amount', 'status', 'modified_at').get(pk=self.txn.pk)
+        self.upload()
+        self.assertEqual(ExpenseTransaction.objects.values('amount', 'status', 'modified_at').get(pk=self.txn.pk), before)
+
+    def test_upload_denied_when_permission_off_even_for_owner(self):
+        self.set_perm('OWNER', 'canUploadBill', False)
+        self.login(self.owner_user)
+        self.assertEqual(self.upload().status_code, 403)
+        self.mocks['upload'].assert_not_called()
+
+    def test_admin_cannot_be_locked_out(self):
+        self.set_perm('ADMIN', 'canUploadBill', False)
+        self.login(self.admin_user)
+        self.assertEqual(self.upload().status_code, 201)
+
+    def test_upload_permission_is_independent_of_view(self):
+        self.set_perm('OWNER', 'canViewBill', False)
+        self.login(self.owner_user)
+        self.assertEqual(self.upload().status_code, 201)
+        self.assertEqual(self.client.get(self.url()).status_code, 403)
+
+    def test_missing_row_falls_back_to_default(self):
+        RolePermission.objects.all().delete()
+        self.login(self.owner_user)
+        self.assertEqual(self.upload().status_code, 201)
+
+    def test_manager_and_anonymous_denied(self):
+        self.login(self.manager_user)
+        self.assertEqual(self.upload().status_code, 403)
+        self.set_perm('MANAGER', 'canUploadBill', True)   # still blocked: managers have no expense API access
+        self.assertEqual(self.upload().status_code, 403)
+        self.client.credentials()
+        self.assertEqual(self.upload().status_code, 401)
+
+    def test_other_projects_transaction_is_404(self):
+        self.login(self.stranger)
+        self.assertEqual(self.upload().status_code, 404)
+        self.assertEqual(self.client.get(self.url()).status_code, 404)
+
+    def test_only_supplier_and_active(self):
+        self.login(self.owner_user)
+        misc = self.supplier_txn(expense_category=ExpenseCategory.MISCELLANEOUS, party_type=PartyType.NONE,
+                                 supplier=None, payee_name='Chai')
+        self.assertEqual(self.upload(txn=misc).status_code, 400)
+        cancelled = self.supplier_txn(status=TransactionStatus.CANCELLED)
+        self.assertEqual(self.upload(txn=cancelled).status_code, 400)
+
+    def test_second_upload_conflicts(self):
+        self.login(self.owner_user)
+        self.assertEqual(self.upload().status_code, 201)
+        self.assertEqual(self.upload().status_code, 409)
+        self.assertEqual(self.mocks['upload'].call_count, 1)
+
+    def test_lost_race_removes_orphan_object(self):
+        self.login(self.owner_user)
+        real = ExpenseTransaction.objects.filter
+
+        def upload_then_someone_else_wins(path, data, ctype):
+            ExpenseTransaction.objects.filter(pk=self.txn.pk).update(bill_path='bills/other.png')
+        self.mocks['upload'].side_effect = upload_then_someone_else_wins
+        self.assertEqual(self.upload().status_code, 409)
+        self.mocks['delete'].assert_called_once()
+
+    def test_file_validation(self):
+        self.login(self.owner_user)
+        self.assertEqual(self.client.post(self.url(), {}, format='multipart').status_code, 400)          # no file
+        self.assertEqual(self.upload(b'', 'a.png').status_code, 400)                                       # empty
+        self.assertEqual(self.upload(b'<html>hi</html>', 'a.png').status_code, 400)                        # spoofed png
+        self.assertEqual(self.upload(PNG, 'a.pdf').status_code, 400)                                       # ext != content
+        self.assertEqual(self.upload(PNG, 'a.gif').status_code, 400)
+        self.assertEqual(self.upload(b'GIF89a' + b'0' * 20, 'a.gif').status_code, 400)
+        with override_settings(BILL_MAX_BYTES=50):
+            self.assertEqual(self.upload(PNG, 'a.png').status_code, 400)                                   # too big
+        self.mocks['upload'].assert_not_called()
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.bill_path, '')
+
+    def test_filename_is_sanitised(self):
+        self.login(self.owner_user)
+        self.assertEqual(self.upload(PNG, '../../etc/pass\x00wd/inv.png').status_code, 201)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.bill_filename, 'inv.png')
+
+    def test_storage_failure_leaves_no_bill(self):
+        from core import bills
+        self.login(self.owner_user)
+        self.mocks['upload'].side_effect = bills.StorageError()
+        self.assertEqual(self.upload().status_code, 502)
+        self.txn.refresh_from_db()
+        self.assertEqual(self.txn.bill_path, '')
+
+    @override_settings(SUPABASE_URL='')
+    def test_unconfigured_storage_is_503(self):
+        from core import bills
+        self.login(self.owner_user)
+        self.mocks['upload'].side_effect = bills.StorageNotConfigured()
+        self.assertEqual(self.upload().status_code, 503)
+
+    # ---- view ----
+    def test_view_returns_short_lived_signed_url(self):
+        self.login(self.owner_user)
+        self.upload()
+        r = self.client.get(self.url())
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data['url'], 'https://x.supabase.co/signed?token=t')
+        self.assertEqual(r.data['expires_in'], 60)
+        self.assertEqual(r.data['content_type'], 'image/png')
+        self.assertEqual(r['Cache-Control'], 'no-store')
+        self.txn.refresh_from_db()
+        self.mocks['sign'].assert_called_once_with(self.txn.bill_path)
+
+    def test_view_denied_when_permission_off(self):
+        self.login(self.owner_user)
+        self.upload()
+        self.set_perm('OWNER', 'canViewBill', False)
+        r = self.client.get(self.url())
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn('url', r.data)
+        self.mocks['sign'].assert_not_called()
+
+    def test_view_without_bill_is_404(self):
+        self.login(self.owner_user)
+        self.assertEqual(self.client.get(self.url()).status_code, 404)
+
+    def test_view_cancelled_expense_bill_still_allowed(self):
+        self.login(self.owner_user)
+        self.upload()
+        self.txn.cancel(cancelled_by=self.owner_user, reason='x')
+        self.assertEqual(self.client.get(self.url()).status_code, 200)
+
+    # ---- serializer / listings ----
+    def test_has_bill_in_listing_and_register_without_path(self):
+        self.login(self.owner_user)
+        self.upload()
+        plain = self.supplier_txn()
+        rows = self.client.get(f'/api/expense-transactions/?project={self.project.id}').data
+        rows = rows['results'] if isinstance(rows, dict) else rows
+        by_id = {r['id']: r for r in rows}
+        self.assertTrue(by_id[self.txn.id]['has_bill'])
+        self.assertFalse(by_id[plain.id]['has_bill'])
+        self.assertEqual(by_id[plain.id]['bill_filename'], '')
+        reg = self.client.get(f'/api/reports/payment-register/?project={self.project.id}').data
+        self.assertTrue(all('bill_path' not in r for r in reg['results']))
+
+    def test_bill_fields_cannot_be_set_through_create(self):
+        self.login(self.owner_user)
+        r = self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-20', 'expense_category': 'SUPPLIER',
+            'expense_type': 'Supplier Payment', 'party_type': 'SUPPLIER', 'supplier': self.supplier.id,
+            'paid_by_owner': self.owner.id, 'amount': '5.00', 'payment_mode': 'CASH',
+            'bill_filename': 'evil.pdf', 'bill_path': 'bills/x'}, format='json')
+        self.assertEqual(r.status_code, 201)
+        self.assertFalse(r.data['has_bill'])
+        self.assertEqual(r.data['bill_filename'], '')
+
+
+class BillsStorageClientTests(APITestCase):
+    """The Supabase REST client: right URLs/headers, key never leaks into errors."""
+
+    @override_settings(SUPABASE_URL='https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY='secret', SUPABASE_BILLS_BUCKET='b')
+    def test_signed_url_request_and_result(self):
+        from core import bills
+        resp = mock.MagicMock()
+        resp.__enter__.return_value.read.return_value = b'{"signedURL": "/object/sign/b/p.png?token=abc"}'
+        with mock.patch('core.bills.urlrequest.urlopen', return_value=resp) as op:
+            url = bills.signed_url('bills/1/2/p.png', 60)
+        req = op.call_args[0][0]
+        self.assertEqual(req.full_url, 'https://x.supabase.co/storage/v1/object/sign/b/bills/1/2/p.png')
+        self.assertEqual(req.get_header('Authorization'), 'Bearer secret')
+        self.assertEqual(url, 'https://x.supabase.co/storage/v1/object/sign/b/p.png?token=abc')
+
+    @override_settings(SUPABASE_URL='', SUPABASE_SERVICE_ROLE_KEY='')
+    def test_not_configured(self):
+        from core import bills
+        with self.assertRaises(bills.StorageNotConfigured):
+            bills.signed_url('x')

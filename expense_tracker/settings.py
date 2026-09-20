@@ -181,6 +181,14 @@ if not DEBUG:
     SECURE_HSTS_SECONDS = config('DJANGO_HSTS_SECONDS', default=3600, cast=int)  # raise once stable
     SECURE_CONTENT_TYPE_NOSNIFF = True
 
+# Supplier bills: private Supabase Storage. The service-role key stays on the server only.
+# If these are not set, the bill endpoints answer 503 and nothing else is affected.
+SUPABASE_URL = config('SUPABASE_URL', default='').rstrip('/')
+SUPABASE_SERVICE_ROLE_KEY = config('SUPABASE_SERVICE_ROLE_KEY', default='')
+SUPABASE_BILLS_BUCKET = config('SUPABASE_BILLS_BUCKET', default='supplier-bills')
+BILL_MAX_BYTES = config('BILL_MAX_BYTES', default=5 * 1024 * 1024, cast=int)
+BILL_URL_EXPIRY_SECONDS = config('BILL_URL_EXPIRY_SECONDS', default=60, cast=int)
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
