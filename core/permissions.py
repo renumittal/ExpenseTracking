@@ -55,3 +55,10 @@ class RoleAllowed(permissions.BasePermission):
             return True
         allowed_roles = getattr(view, 'allowed_roles', frozenset())
         return get_role(request.user) in allowed_roles
+
+
+class AdminOnly(permissions.BasePermission):
+    """Only ADMIN (Profile.role == ADMIN or superuser)."""
+
+    def has_permission(self, request, view):
+        return is_admin(request.user)

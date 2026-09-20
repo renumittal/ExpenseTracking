@@ -45,6 +45,8 @@
   const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   const today = () => iso(new Date());
   const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); return iso(d); };
+  const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const shortDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${String(d).padStart(2, '0')}-${EN_MONTHS[m - 1]}-${y}` : ''; };
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
 
   const state = { token: store.get('token'), me: null, projects: [], project: null, names: null };
@@ -78,6 +80,17 @@
     return data;
   }
 
+  // Plain validation messages the server sends for a rejected request (never technical detail).
+  function serverMsg(e) {
+    if (!e || e.status !== 400 || !e.data) return '';
+    const out = [];
+    (function walk(v) {
+      if (typeof v === 'string') { if (!out.includes(v)) out.push(v); }
+      else if (Array.isArray(v)) v.forEach(walk);
+      else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+    })(e.data);
+    return out.slice(0, 3).join(' ');
+  }
   const friendly = e => (e && e.kind === 'network' ? MSG.network : e && e.status === 403 ? MSG.noPermission : MSG.problem);
   const errBox = text => `<div class="msg error" role="alert">${esc(text)}</div>`;
   const loading = () => { $view.innerHTML = '<div class="spinner">⏳ रुकिए...</div>'; };
@@ -252,9 +265,222 @@
     const $ = id => document.getElementById(id);
     const setErr = (id, text) => { $(id).textContent = text || ''; $(id).parentElement.classList.toggle('bad', !!text); };
 
+    // ----- Labour: pick several labourers of this project, one amount each -----
+    const lab = { showInactive: false, lists: {}, on: new Set(), amt: {}, q: '' };
+    let labGen = 0;   // bumped whenever the labour panel is (re)built or left, so stale async work stops
+    const labAlive = gen => gen === labGen && f.cat === 'LABOUR' && !!document.getElementById('llist');
+    const labKinds = () => (lab.showInactive ? ['active', 'inactive'] : ['active']);
+    async function labLoad(kind) {
+      if (!lab.lists[kind]) lab.lists[kind] = await api(`project-labour/?project=${state.project.id}&status=${kind}`);
+      return lab.lists[kind];
+    }
+    // Money as whole paise (integers) so totals never pick up floating-point errors.
+    const paise = t => {
+      const m = /^(\d*)(?:\.(\d{0,2}))?$/.exec(String(t || '').trim());
+      return m ? Number(m[1] || 0) * 100 + Number((m[2] || '').padEnd(2, '0') || 0) : 0;
+    };
+    const paiseText = c => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}`;
+    const labRows = () => {
+      const rows = lab.lists.active.slice();
+      (lab.lists.inactive || []).forEach(r => { if (lab.showInactive || lab.on.has(r.labour)) rows.push(r); });
+      return rows;
+    };
+    const labTotal = () => [...lab.on].reduce((sum, id) => sum + paise(lab.amt[id]), 0);
+    function labUpdate() {
+      if (!$('ltotal')) return;
+      const hiddenSel = document.querySelectorAll('#llist .lab-row.on[hidden]').length;
+      $('ltotal').textContent = money(labTotal() / 100);
+      $('lcount').textContent = lab.on.size ? `(${lab.on.size} चुने${hiddenSel ? ` · ${hiddenSel} खोज में छिपे` : ''})` : '';
+    }
+    // Search only hides rows; it never clears a selection or an amount.
+    function labFilter() {
+      const q = lab.q.trim().toLowerCase();
+      $('llist').querySelectorAll('.lab-row').forEach(r => { r.hidden = !!q && !r.dataset.name.includes(q); });
+      labUpdate();
+    }
+    function labDrawRows() {
+      const rows = labRows();
+      if (!$('llist')) return;
+      $('llist').innerHTML = rows.length ? rows.map(r => `
+        <div class="lab-row ${lab.on.has(r.labour) ? 'on' : ''}" data-id="${r.labour}" data-name="${esc((r.name + ' ' + r.mobile).toLowerCase())}">
+          <label class="lab-pick"><input type="checkbox" class="lab-chk" ${lab.on.has(r.labour) ? 'checked' : ''}>
+            <span class="lab-name">${esc(r.name)}${r.type ? ` <small>${esc(r.type)}</small>` : ''}
+              ${r.is_active ? '' : '<span class="pill warn">काम बंद</span>'}
+              ${r.last_paid ? `<span class="lab-last">Last paid: ${shortDate(r.last_paid)}</span>` : ''}</span></label>
+          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0" aria-label="${esc(r.name)} राशि" value="${esc(lab.amt[r.labour] || '')}"></span>
+          ${r.is_active ? '<button type="button" class="lab-stop">काम बंद करें <small>Mark inactive</small></button>' : ''}
+        </div>`).join('')
+        : '<div class="msg info">इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है। "नया मज़दूर" जोड़िए या पुराने मज़दूर दिखाइए.</div>';
+      labFilter();
+    }
+    function labModal(gen) {
+      const box = document.createElement('div');
+      box.className = 'modal';
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया मज़दूर" novalidate>
+        <h2 style="margin-top:0">➕ नया मज़दूर <small>Add Labour</small></h2>
+        <div id="m-err"></div>
+        <div id="m-fields">
+          <label for="m-name">नाम / मिस्त्री <small>Name</small> *</label>
+          <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
+          <label for="m-type">काम का प्रकार <small>Type (optional)</small></label>
+          <input id="m-type" type="text" autocomplete="off" placeholder="जैसे: मिस्त्री, हेल्पर" enterkeyhint="next">
+          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
+          <button class="btn green" type="submit" id="m-save">💾 सेव करें <span class="sub">SAVE</span></button>
+        </div>
+        <div id="m-dup" hidden></div>
+        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+      </form>`;
+      document.body.appendChild(box);
+      const m = id => box.querySelector('#' + id);
+      const close = () => {
+        box.remove();
+        document.removeEventListener('keydown', onKey);
+        window.removeEventListener('hashchange', close);
+      };
+      const onKey = e => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      window.addEventListener('hashchange', close);      // Back / navigation must not leave the overlay behind
+      m('m-cancel').onclick = close;
+      m('m-name').focus();
+
+      // The labour now exists on the server; show it in the list and select it.
+      async function added(r) {
+        close();
+        if (!labAlive(gen)) return;
+        try {
+          lab.on.add(r.labour);
+          lab.q = ''; if ($('lq')) $('lq').value = '';
+          if (lab.lists.active) {
+            ['active', 'inactive'].forEach(k => { if (lab.lists[k]) lab.lists[k] = lab.lists[k].filter(x => x.labour !== r.labour); });
+            lab.lists.active.unshift(r);
+            labDrawRows();
+          } else {
+            lab.lists = {};            // the first load had failed: reload it, the new labour is included
+            await drawLabour();
+          }
+          if ($('lnote')) $('lnote').innerHTML = r.reused ? '<div class="msg info">यह मज़दूर पहले से था — इस प्रोजेक्ट में चालू कर दिया.</div>' : '';
+          const row = document.querySelector(`#llist .lab-row[data-id="${r.labour}"]`);
+          if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('.lab-a').focus(); }
+        } catch (err) { console.error('after add labour', err); }
+      }
+
+      // Same name, different mobile: ask "is this the same person?" (only when there is such a match).
+      function askSame(cands, send) {
+        m('m-fields').hidden = true;
+        const dup = m('m-dup');
+        dup.hidden = false;
+        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही मज़दूर है? <small>Is this the same person?</small></h2>` +
+          cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
+            <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
+            <div class="muted">${c.last_paid ? 'Last paid: ' + shortDate(c.last_paid) : 'Never paid'}</div>
+            <button class="btn green" type="button" data-use="${c.labour}" style="margin-bottom:0">✔ यही है <span class="sub">Use this Labour</span></button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ अलग व्यक्ति है <span class="sub">Different Person</span></button>`;
+        dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_labour: Number(b.dataset.use) }));
+        m('m-new').onclick = () => send({ confirm_new: true });
+      }
+
+      box.querySelector('form').onsubmit = async ev => {
+        ev.preventDefault();
+        const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
+        if (!name) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
+        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        const send = async extra => {
+          const btns = box.querySelectorAll('button');
+          btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
+          m('m-err').innerHTML = '';
+          let r;
+          try {
+            r = await api('project-labour/', { method: 'POST', body: {
+              project: state.project.id, name, mobile, type: m('m-type').value.trim(), remarks: m('m-rem').value.trim(), ...extra } });
+          } catch (e) {
+            btns.forEach(b => { b.disabled = false; });
+            if (e.status === 409 && e.data && e.data.code === 'possible_duplicate') { askSame(e.data.candidates || [], send); return; }
+            m('m-fields').hidden = false; m('m-dup').hidden = true;
+            m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
+            return;
+          }
+          await added(r);
+        };
+        send({});
+      };
+    }
+    async function drawLabour() {
+      const gen = ++labGen;
+      $('s-who').innerHTML = `
+        <div class="q"><span class="num">3</span>किस मज़दूर को दिया? <small>Labour Payments</small> <small id="lcount"></small></div>
+        <div class="lab-bar">
+          <input id="lq" type="text" autocomplete="off" enterkeyhint="search" placeholder="🔍 मज़दूर खोजिए (Search Labour)" value="${esc(lab.q)}">
+          <button type="button" class="btn line" id="ladd">➕ नया <span class="sub">Add Labour</span></button>
+        </div>
+        <label class="lab-inact"><input type="checkbox" id="linact" ${lab.showInactive ? 'checked' : ''}> पुराने / काम बंद मज़दूर भी दिखाएँ <small>Show Inactive</small></label>
+        <div id="lnote"></div>
+        <div id="llist"><div class="spinner">⏳ रुकिए...</div></div>
+        <div class="card row lab-total"><span>कुल मज़दूरी <small>Total Labour Payment</small></span><span class="amount" id="ltotal">${money(0)}</span></div>
+        <div><div class="field-error" id="e-lab"></div></div>`;
+      $('lq').oninput = e => { lab.q = e.target.value; labFilter(); };
+      $('ladd').onclick = () => labModal(gen);
+      $('linact').onchange = async e => {
+        lab.showInactive = e.target.checked;
+        try { await labLoad('inactive'); if (labAlive(gen)) labDrawRows(); }
+        catch (err) { if (labAlive(gen)) $('llist').innerHTML = errBox(friendly(err)); }
+      };
+      const list = $('llist');
+      list.onchange = e => {
+        if (!e.target.classList.contains('lab-chk')) return;
+        const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
+        if (e.target.checked) { lab.on.add(id); row.classList.add('on'); row.querySelector('.lab-a').focus(); }
+        else { lab.on.delete(id); row.classList.remove('on'); }
+        row.classList.remove('bad-row');
+        labUpdate();
+      };
+      list.oninput = e => {
+        if (!e.target.classList.contains('lab-a')) return;
+        const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
+        const [whole, ...rest] = e.target.value.replace(/[^0-9.]/g, '').split('.');
+        e.target.value = whole.slice(0, 9) + (rest.length ? '.' + rest.join('').slice(0, 2) : '');
+        lab.amt[id] = e.target.value;
+        if (e.target.value) { lab.on.add(id); row.classList.add('on'); row.querySelector('.lab-chk').checked = true; }
+        row.classList.remove('bad-row');
+        setErr('e-lab', '');
+        labUpdate();
+      };
+      list.onkeydown = e => {
+        if (e.key !== 'Enter' || !e.target.classList.contains('lab-a')) return;
+        e.preventDefault();
+        let row = e.target.closest('.lab-row').nextElementSibling;
+        while (row && row.hidden) row = row.nextElementSibling;
+        if (row) row.querySelector('.lab-a').focus(); else e.target.blur();
+      };
+      list.onclick = async e => {
+        const btn = e.target.closest('.lab-stop');
+        if (!btn) return;
+        const row = btn.closest('.lab-row'), id = Number(row.dataset.id);
+        const link = (lab.lists.active || []).find(x => x.labour === id);
+        if (!link || !confirm(`${link.name} को इस प्रोजेक्ट में "काम बंद" करें?\nपुराना हिसाब बना रहेगा.`)) return;
+        try {
+          await api(`project-labour/${link.id}/set-active/`, { method: 'POST', body: { is_active: false } });
+          lab.lists.active = lab.lists.active.filter(x => x !== link);
+          if (lab.lists.inactive) lab.lists.inactive.push({ ...link, is_active: false });
+          lab.on.delete(id); delete lab.amt[id];
+          if (labAlive(gen)) labDrawRows();
+        } catch (err) { if (labAlive(gen)) $('lnote').innerHTML = errBox(serverMsg(err) || friendly(err)); }
+      };
+      try {
+        await labLoad('active');
+        if (lab.showInactive) await labLoad('inactive');
+        if (labAlive(gen)) labDrawRows();
+      } catch (err) { if (labAlive(gen)) $('llist').innerHTML = errBox(friendly(err)); }
+    }
+
     function drawWho() {
       const cat = f.cat;
       let html = '';
+      $('s-amt').hidden = cat === 'LABOUR';   // labour has one amount per person instead
+      if (cat !== 'LABOUR') labGen++;         // stop any labour load still in flight
+      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.what = ''; drawLabour(); return; }
       if (!cat) {
         html = '<div class="q"><span class="num">3</span>किसको दिया? <small>Name</small></div><p class="muted">पहले ऊपर बताइए कि किस चीज़ का खर्च है.</p>';
       } else if (cat === 'CONTRACTOR') {
@@ -312,10 +538,21 @@
       const amt = Number(f.amount);
       const fail = (id, text, scrollTo) => { setErr(id, text); $(scrollTo).scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; };
       if (!f.cat) return fail('e-cat', 'कृपया बताइए किस चीज़ का खर्च है.', 's-cat');
-      if (!f.amount || !(amt > 0)) return fail('e-amt', 'कृपया राशि भरें.', 's-amt');
-      if (amt >= 1e10) return fail('e-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.', 's-amt');
+      if (f.cat === 'LABOUR') {
+        if (!lab.on.size) return fail('e-lab', 'कृपया कम से कम एक मज़दूर चुनिए.', 's-who');
+        const bad = [...lab.on].filter(id => !(paise(lab.amt[id]) > 0));
+        $('llist').querySelectorAll('.lab-row').forEach(r => r.classList.toggle('bad-row', bad.includes(Number(r.dataset.id))));
+        if (bad.length) {
+          $('llist').querySelector('.bad-row').scrollIntoView({ behavior: 'smooth', block: 'center' });
+          setErr('e-lab', 'चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).');
+          return true;
+        }
+      } else {
+        if (!f.amount || !(amt > 0)) return fail('e-amt', 'कृपया राशि भरें.', 's-amt');
+        if (amt >= 1e10) return fail('e-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.', 's-amt');
+      }
       if (f.cat === 'CONTRACTOR' && !f.contractId) return fail('e-who', 'कृपया ठेकेदार चुनिए.', 's-who');
-      if (f.cat !== 'CONTRACTOR' && !f.name.trim()) return fail('e-who', 'कृपया नाम भरें.', 's-who');
+      if (f.cat !== 'CONTRACTOR' && f.cat !== 'LABOUR' && !f.name.trim()) return fail('e-who', 'कृपया नाम भरें.', 's-who');
       if (!$('date').value) return fail('e-date', 'कृपया तारीख चुनिए.', 's-date');
       return false;
     }
@@ -326,6 +563,23 @@
       if (firstError()) return;
       saving = true; $('save').disabled = true; $('save').firstChild.textContent = '⏳ सेव हो रहा है... ';
       try {
+        if (f.cat === 'LABOUR') {
+          const picked = labRows().filter(r => lab.on.has(r.labour));
+          const res = await api('labour-payments/', { method: 'POST', body: {
+            project: state.project.id,
+            expense_date: $('date').value,
+            paid_by_owner: state.me.owner_id,
+            payment_mode: f.mode,
+            remarks: $('note').value.trim() || null,
+            // Only true when the user picked a labour from "Show Inactive".
+            include_inactive: picked.some(r => !r.is_active),
+            payments: picked.map(r => ({ labour: r.labour, amount: paiseText(paise(lab.amt[r.labour])) })),
+          } });
+          state.names = null;
+          sessionStorage.setItem('justSaved', JSON.stringify({ amount: res.total, who: picked.slice(0, 3).map(r => r.name).join(', ') + (picked.length > 3 ? ` +${picked.length - 3}` : '') }));
+          location.hash = '#/done';
+          return;
+        }
         const cat = CAT[f.cat];
         const body = {
           project: state.project.id,
@@ -341,11 +595,10 @@
         if (f.cat === 'CONTRACTOR') body.contractor_contract = Number(f.contractId);
         else if (f.cat === 'MISCELLANEOUS') body.payee_name = f.name.trim();
         else {
-          const list = f.cat === 'LABOUR' ? names.labour : names.suppliers;
           const typed = f.name.trim();
-          let match = list.find(x => x.name.toLowerCase() === typed.toLowerCase());
-          if (!match) match = await api(f.cat === 'LABOUR' ? 'labour/' : 'suppliers/', { method: 'POST', body: { name: typed } });
-          body[f.cat === 'LABOUR' ? 'labour' : 'supplier'] = match.id;
+          let match = names.suppliers.find(x => x.name.toLowerCase() === typed.toLowerCase());
+          if (!match) match = await api('suppliers/', { method: 'POST', body: { name: typed } });
+          body.supplier = match.id;
         }
         await api('expense-transactions/', { method: 'POST', body });
         state.names = null;
@@ -353,7 +606,7 @@
         location.hash = '#/done';
       } catch (e) {
         saving = false; $('save').disabled = false; $('save').firstChild.textContent = '💾 खर्च सेव करें ';
-        $('bottom').innerHTML = errBox(friendly(e));
+        $('bottom').innerHTML = errBox(serverMsg(e) || friendly(e));
         $('bottom').scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     };

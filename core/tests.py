@@ -1,6 +1,10 @@
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase
 from rest_framework import status
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -18,6 +22,7 @@ from .models import (
     PaymentMode,
     Profile,
     Project,
+    ProjectLabour,
     ProjectOwner,
     Role,
     Supplier,
@@ -516,10 +521,19 @@ class SimpleFrontendSupportTests(APITestCase):
         self.assertEqual(data['owner_id'], self.owner.id)
         self.assertEqual(data['name'], 'Ramesh')
 
-    def test_owner_can_add_labour_and_supplier_by_name(self):
-        self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 201)
+    def test_owner_can_add_supplier_by_name_and_list_labour(self):
         self.assertEqual(self.client.post('/api/suppliers/', {'name': 'Sharma Bricks'}).status_code, 201)
+        Labour.objects.create(name='Mohan')
         self.assertEqual(len(self.client.get('/api/labour/').data), 1)
+
+    def test_owner_cannot_post_labour_but_admin_can(self):
+        self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 403)
+        self.assertEqual(Labour.objects.count(), 0)
+        admin = User.objects.create_superuser(username='adm', password='pass12345', email='a@a.com')
+        Profile.objects.create(user=admin, role=Role.ADMIN)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+        self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 201)
+        self.assertEqual(Labour.objects.count(), 1)
 
     def test_labour_cannot_be_edited_or_deleted(self):
         labour = Labour.objects.create(name='Mohan')
@@ -539,3 +553,351 @@ class HealthCheckTests(APITestCase):
             response = self.client.get('/health/')
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), {'status': 'ok'})
+
+
+class LabourPaymentEntryTests(APITestCase):
+    """Multi-labour payment entry, project-wise active labour, add-labour."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.other = Project.objects.create(name='Other', code='OT')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        self.owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+        self.rajesh = Labour.objects.create(name='Rajesh Kumar', mobile='9000000001')
+        self.suresh = Labour.objects.create(name='Suresh', mobile='9000000002')
+        self.amit = Labour.objects.create(name='Amit', mobile='9000000003')
+        ProjectLabour.objects.create(project=self.project, labour=self.rajesh, is_active=False)
+        for lab in (self.suresh, self.amit):
+            ProjectLabour.objects.create(project=self.project, labour=lab)
+        ProjectLabour.objects.create(project=self.other, labour=self.rajesh)  # active elsewhere
+
+    def pay(self, lines, **extra):
+        body = {
+            'project': self.project.id, 'expense_date': '2026-09-19', 'paid_by_owner': self.owner.id,
+            'payment_mode': 'CASH', 'payments': lines, **extra,
+        }
+        return self.client.post('/api/labour-payments/', body, format='json')
+
+    def test_multi_labour_entry_stores_each_amount_against_its_labour(self):
+        r = self.pay([{'labour': self.suresh.id, 'amount': '2000'}, {'labour': self.amit.id, 'amount': '500.50'}],
+                     remarks='daily')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(Decimal(str(r.data['total'])), Decimal('2500.50'))
+        rows = ExpenseTransaction.objects.filter(payment_batch=r.data['payment_batch'])
+        self.assertEqual(rows.count(), 2)
+        self.assertEqual(rows.get(labour=self.suresh).amount, Decimal('2000.00'))
+        self.assertEqual(rows.get(labour=self.amit).amount, Decimal('500.50'))
+        self.assertTrue(all(t.expense_category == 'LABOUR' and t.party_type == 'LABOUR' and t.remarks == 'daily' for t in rows))
+
+    def test_invalid_amounts_rejected_and_nothing_saved(self):
+        for bad in ('0', '-5', '', None, 'abc'):
+            r = self.pay([{'labour': self.suresh.id, 'amount': '100'}, {'labour': self.amit.id, 'amount': bad}])
+            self.assertEqual(r.status_code, 400, bad)
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+
+    def test_duplicate_labour_in_one_entry_rejected(self):
+        r = self.pay([{'labour': self.suresh.id, 'amount': '100'}, {'labour': self.suresh.id, 'amount': '200'}])
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+
+    def test_labour_must_belong_to_project_and_entry_needs_a_line(self):
+        outsider = Labour.objects.create(name='Outsider', mobile='9000000009')
+        self.assertEqual(self.pay([{'labour': outsider.id, 'amount': '100'}]).status_code, 400)
+        self.assertEqual(self.pay([]).status_code, 400)
+
+    def test_owner_cannot_pay_on_unlinked_project(self):
+        ProjectLabour.objects.create(project=self.other, labour=self.suresh)
+        r = self.client.post('/api/labour-payments/', {
+            'project': self.other.id, 'expense_date': '2026-09-19', 'paid_by_owner': self.owner.id,
+            'payment_mode': 'CASH', 'payments': [{'labour': self.suresh.id, 'amount': '100'}],
+        }, format='json')
+        self.assertEqual(r.status_code, 403)
+
+    def test_default_list_is_active_only_and_inactive_is_separate(self):
+        active = self.client.get(f'/api/project-labour/?project={self.project.id}').data
+        self.assertEqual({r['name'] for r in active}, {'Suresh', 'Amit'})
+        inactive = self.client.get(f'/api/project-labour/?project={self.project.id}&status=inactive').data
+        self.assertEqual([r['name'] for r in inactive], ['Rajesh Kumar'])
+        self.assertEqual(self.client.get(f'/api/project-labour/?project={self.other.id}').status_code, 200)
+        self.assertEqual(self.client.get(f'/api/project-labour/?project={self.other.id}').data, [])  # not my project
+
+    def test_deactivate_keeps_master_history_and_reports(self):
+        self.pay([{'labour': self.suresh.id, 'amount': '1000'}])
+        link = ProjectLabour.objects.get(project=self.project, labour=self.suresh)
+        r = self.client.post(f'/api/project-labour/{link.id}/set-active/', {'is_active': False}, format='json')
+        self.assertEqual(r.status_code, 200)
+        names = [x['name'] for x in self.client.get(f'/api/project-labour/?project={self.project.id}').data]
+        self.assertNotIn('Suresh', names)
+        self.assertTrue(Labour.objects.filter(id=self.suresh.id).exists())
+        rep = self.client.get(f'/api/reports/labour/?project={self.project.id}').data
+        self.assertEqual([(x['labour_name'], Decimal(str(x['total_paid']))) for x in rep['labour']],
+                         [('Suresh', Decimal('1000.00'))])
+
+    def test_reactivate_reuses_same_labour_and_paying_inactive_reactivates(self):
+        n = Labour.objects.count()
+        link = ProjectLabour.objects.get(project=self.project, labour=self.rajesh)
+        self.client.post(f'/api/project-labour/{link.id}/set-active/', {'is_active': True}, format='json')
+        self.assertTrue(ProjectLabour.objects.get(pk=link.pk).is_active)
+        link.is_active = False
+        link.save()
+        self.assertEqual(self.pay([{'labour': self.rajesh.id, 'amount': '900'}], include_inactive=True).status_code, 201)
+        self.assertTrue(ProjectLabour.objects.get(pk=link.pk).is_active)
+        self.assertEqual(Labour.objects.count(), n)
+
+    def add(self, **kw):
+        body = {'project': self.project.id, 'name': 'Mahesh', 'mobile': '9812345678', **kw}
+        return self.client.post('/api/project-labour/', body, format='json')
+
+    def test_add_labour_creates_master_and_active_link(self):
+        r = self.add(type='Mistri', remarks='new')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertFalse(r.data['reused'])
+        lab = Labour.objects.get(name='Mahesh')
+        self.assertEqual((lab.mobile, lab.type, lab.remarks), ('9812345678', 'Mistri', 'new'))
+        self.assertTrue(ProjectLabour.objects.get(project=self.project, labour=lab).is_active)
+        self.assertIn('Mahesh', [x['name'] for x in self.client.get(f'/api/project-labour/?project={self.project.id}').data])
+
+    def test_add_labour_requires_name_and_mobile(self):
+        self.assertEqual(self.add(name='  ').status_code, 400)
+        self.assertEqual(self.add(mobile='').status_code, 400)
+        self.assertEqual(self.add(mobile='123').status_code, 400)
+        self.assertFalse(Labour.objects.filter(name='Mahesh').exists())
+
+    def test_add_labour_reuses_existing_person_and_reactivates(self):
+        n = Labour.objects.count()
+        r = self.add(name='  rajesh   kumar ', mobile='90000 00001')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data['reused'])
+        self.assertEqual(r.data['labour'], self.rajesh.id)
+        self.assertEqual(Labour.objects.count(), n)
+        self.assertTrue(ProjectLabour.objects.get(project=self.project, labour=self.rajesh).is_active)
+
+    def test_old_single_labour_transaction_api_and_reports_unchanged(self):
+        r = self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-01', 'expense_category': 'LABOUR',
+            'expense_type': 'Labour Payment', 'party_type': 'LABOUR', 'labour': self.suresh.id,
+            'paid_by_owner': self.owner.id, 'amount': '750.00', 'payment_mode': 'CASH'}, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertIsNone(ExpenseTransaction.objects.get(pk=r.data['id']).payment_batch)
+        reg = self.client.get(f'/api/reports/payment-register/?project={self.project.id}').data
+        self.assertEqual(len(reg.get('results', reg)), 1)
+
+
+class LabourPaymentRulesTests(APITestCase):
+    """Inactive opt-in, paid_by_owner, last paid, atomicity."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        self.owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        other_user = User.objects.create_user(username='own2', password='pass12345')
+        Profile.objects.create(user=other_user, role=Role.OWNER)
+        self.other_owner = Owner.objects.create(user=other_user, name='Someone Else')
+        ProjectOwner.objects.create(project=self.project, owner=self.other_owner)  # same project, other person
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+        self.active = Labour.objects.create(name='Suresh', mobile='9000000002')
+        self.gone = Labour.objects.create(name='Rajesh Kumar', mobile='9000000001')
+        ProjectLabour.objects.create(project=self.project, labour=self.active)
+        ProjectLabour.objects.create(project=self.project, labour=self.gone, is_active=False)
+
+    def pay(self, lines, owner=None, **extra):
+        return self.client.post('/api/labour-payments/', {
+            'project': self.project.id, 'expense_date': '2026-09-19', 'paid_by_owner': (owner or self.owner).id,
+            'payment_mode': 'CASH', 'payments': lines, **extra}, format='json')
+
+    def test_inactive_without_flag_rejected_and_nothing_saved(self):
+        r = self.pay([{'labour': self.active.id, 'amount': '100'}, {'labour': self.gone.id, 'amount': '200'}])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('inactive', str(r.data))
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+        self.assertFalse(ProjectLabour.objects.get(labour=self.gone).is_active)
+
+    def test_inactive_with_flag_accepted_same_master_id_and_reactivated(self):
+        masters = Labour.objects.count()
+        r = self.pay([{'labour': self.gone.id, 'amount': '200'}], include_inactive=True)
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(ExpenseTransaction.objects.get().labour_id, self.gone.id)
+        self.assertTrue(ProjectLabour.objects.get(labour=self.gone).is_active)
+        self.assertEqual(Labour.objects.count(), masters)
+
+    def test_active_labour_needs_no_flag(self):
+        self.assertEqual(self.pay([{'labour': self.active.id, 'amount': '100'}]).status_code, 201)
+
+    def test_paid_by_own_owner_ok_and_other_owner_rejected(self):
+        self.assertEqual(self.pay([{'labour': self.active.id, 'amount': '100'}]).status_code, 201)
+        r = self.pay([{'labour': self.active.id, 'amount': '100'}], owner=self.other_owner)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('paid_by_owner', r.data)
+        self.assertEqual(ExpenseTransaction.objects.count(), 1)
+
+    def test_admin_may_record_for_any_owner(self):
+        admin = User.objects.create_superuser(username='adm', password='pass12345', email='a@a.com')
+        Profile.objects.create(user=admin, role=Role.ADMIN)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
+        self.assertEqual(self.pay([{'labour': self.active.id, 'amount': '100'}], owner=self.other_owner).status_code, 201)
+
+    def test_unauthenticated_rejected(self):
+        self.client.credentials()
+        self.assertIn(self.pay([{'labour': self.active.id, 'amount': '100'}]).status_code, (401, 403))
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+
+    def test_amount_error_message_is_readable_and_no_partial_save(self):
+        r = self.pay([{'labour': self.active.id, 'amount': '100'}, {'labour': self.gone.id, 'amount': '0'}], include_inactive=True)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('greater than zero', str(r.data))
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+
+    def test_batch_shared_across_a_multi_labour_submission(self):
+        r = self.pay([{'labour': self.active.id, 'amount': '100'}, {'labour': self.gone.id, 'amount': '200'}], include_inactive=True)
+        batches = set(ExpenseTransaction.objects.values_list('payment_batch', flat=True))
+        self.assertEqual(len(batches), 1)
+        self.assertEqual(str(batches.pop()), r.data['payment_batch'])
+
+    def test_last_paid_ignores_cancelled_and_other_projects_and_orders_recent_first(self):
+        other = Project.objects.create(name='Other', code='OT')
+        def txn(project, labour, day, status='ACTIVE'):
+            return ExpenseTransaction.objects.create(
+                project=project, expense_date=day, expense_category='LABOUR', expense_type='x', party_type='LABOUR',
+                labour=labour, paid_by_owner=self.owner, amount='10', payment_mode='CASH', status=status,
+                created_by=self.user)
+        txn(self.project, self.active, '2026-09-10')
+        txn(self.project, self.active, '2026-09-18')
+        txn(self.project, self.active, '2026-09-25', status='CANCELLED')   # must be ignored
+        txn(other, self.active, '2026-09-28')                               # other project: ignored
+        older = Labour.objects.create(name='Amit', mobile='9000000003')
+        ProjectLabour.objects.create(project=self.project, labour=older)
+        txn(self.project, older, '2026-08-01')
+        never = Labour.objects.create(name='Aaa Never', mobile='9000000004')
+        ProjectLabour.objects.create(project=self.project, labour=never)
+        rows = self.client.get(f'/api/project-labour/?project={self.project.id}').data
+        self.assertEqual([(r['name'], r['last_paid']) for r in rows],
+                         [('Suresh', '2026-09-18'), ('Amit', '2026-08-01'), ('Aaa Never', None)])
+
+    def test_existing_single_labour_api_and_reports_still_work(self):
+        r = self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-01', 'expense_category': 'LABOUR',
+            'expense_type': 'Labour Payment', 'party_type': 'LABOUR', 'labour': self.active.id,
+            'paid_by_owner': self.owner.id, 'amount': '750.00', 'payment_mode': 'CASH'}, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+        rep = self.client.get(f'/api/reports/labour/?project={self.project.id}').data
+        self.assertEqual([(x['labour_name'], Decimal(str(x['total_paid']))) for x in rep['labour']], [('Suresh', Decimal('750.00'))])
+        dash = self.client.get(f'/api/projects/{self.project.id}/dashboard/').data
+        self.assertEqual(Decimal(str(dash['total_expense'])), Decimal('750.00'))
+
+
+class AddLabourDuplicateTests(APITestCase):
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=owner)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+        self.rajesh = Labour.objects.create(name='Rajesh Kumar', mobile='98765 43210')
+        self.legacy = Labour.objects.create(name='Vijay Singh', mobile='')
+
+    def add(self, **kw):
+        return self.client.post('/api/project-labour/', {
+            'project': self.project.id, 'name': 'Mahesh', 'mobile': '9812345678', **kw}, format='json')
+
+    def test_same_mobile_reuses_even_with_different_spelling_and_format(self):
+        n = Labour.objects.count()
+        r = self.add(name='Rajesh K.', mobile='+91 98765-43210')
+        self.assertEqual(r.status_code, 201)     # new link, reused master
+        self.assertTrue(r.data['reused'])
+        self.assertEqual(r.data['labour'], self.rajesh.id)
+        self.assertEqual(Labour.objects.count(), n)
+        self.assertEqual(Labour.objects.get(pk=self.rajesh.id).name, 'Rajesh Kumar')   # not renamed
+
+    def test_same_normalized_name_with_blank_mobile_reuses_and_fills_mobile(self):
+        n = Labour.objects.count()
+        r = self.add(name='  vijay    SINGH ', mobile='9111111111')
+        self.assertEqual(r.data['labour'], self.legacy.id)
+        self.assertEqual(Labour.objects.count(), n)
+        self.assertEqual(Labour.objects.get(pk=self.legacy.id).mobile, '9111111111')
+
+    def test_same_name_different_mobile_returns_409_candidates_and_creates_nothing(self):
+        ProjectLabour.objects.create(project=self.project, labour=self.rajesh)
+        ExpenseTransaction.objects.create(
+            project=self.project, expense_date='2026-09-18', expense_category='LABOUR', expense_type='x',
+            party_type='LABOUR', labour=self.rajesh, paid_by_owner=Owner.objects.get(), amount='10',
+            payment_mode='CASH', created_by=self.user)
+        n, links = Labour.objects.count(), ProjectLabour.objects.count()
+        r = self.add(name='rajesh  kumar', mobile='9000000000')
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data['code'], 'possible_duplicate')
+        self.assertEqual(r.data['candidates'], [{
+            'labour': self.rajesh.id, 'name': 'Rajesh Kumar', 'mobile_masked': '******3210', 'last_paid': date(2026, 9, 18)}])
+        self.assertNotIn('9876543210', str(r.data))
+        self.assertEqual((Labour.objects.count(), ProjectLabour.objects.count()), (n, links))
+
+    def test_use_this_labour_reuses_same_id_and_activates(self):
+        ProjectLabour.objects.create(project=self.project, labour=self.rajesh, is_active=False)
+        n = Labour.objects.count()
+        r = self.add(name='Rajesh Kumar', mobile='9000000000', use_labour=self.rajesh.id)
+        self.assertIn(r.status_code, (200, 201))
+        self.assertEqual(r.data['labour'], self.rajesh.id)
+        self.assertTrue(r.data['is_active'])
+        self.assertEqual(Labour.objects.count(), n)
+        self.assertEqual(Labour.objects.get(pk=self.rajesh.id).mobile, '98765 43210')  # existing mobile untouched
+
+    def test_use_labour_must_be_a_real_candidate(self):
+        stranger = Labour.objects.create(name='Unrelated', mobile='9333333333')
+        self.assertEqual(self.add(name='Rajesh Kumar', mobile='9000000000', use_labour=stranger.id).status_code, 400)
+
+    def test_different_person_creates_new_master_once(self):
+        n = Labour.objects.count()
+        r = self.add(name='Rajesh Kumar', mobile='9000000000', confirm_new=True)
+        self.assertEqual(r.status_code, 201)
+        self.assertFalse(r.data['reused'])
+        self.assertNotEqual(r.data['labour'], self.rajesh.id)
+        self.assertEqual(Labour.objects.count(), n + 1)
+        again = self.add(name='Rajesh Kumar', mobile='9000000000')      # now the same mobile -> reuse
+        self.assertEqual(again.data['labour'], r.data['labour'])
+        self.assertEqual(Labour.objects.count(), n + 1)
+
+    def test_brand_new_person_is_one_step(self):
+        r = self.add()
+        self.assertEqual(r.status_code, 201)
+        self.assertEqual(r.data['last_paid'], None)
+
+
+class BackfillMigrationTests(TransactionTestCase):
+    """Historical payments -> ProjectLabour rows, using the real 0001 -> 0002 migration."""
+
+    def test_backfill_uses_payment_history_not_payment_age(self):
+        executor = MigrationExecutor(connection)
+        executor.migrate([('core', '0001_initial')])
+        old = executor.loader.project_state([('core', '0001_initial')]).apps
+        user = old.get_model('auth', 'User').objects.create(username='u')
+        project = old.get_model('core', 'Project').objects.create(name='P', code='P')
+        owner = old.get_model('core', 'Owner').objects.create(user=user, name='O')
+        Labour_, Txn = old.get_model('core', 'Labour'), old.get_model('core', 'ExpenseTransaction')
+        recent, ancient, cancelled_only, mixed, none = (
+            Labour_.objects.create(name=n) for n in ('Recent', 'Ancient', 'CancelledOnly', 'Mixed', 'NoPayments'))
+
+        def txn(labour, day, status='ACTIVE'):
+            Txn.objects.create(project=project, expense_date=day, expense_category='LABOUR', expense_type='x',
+                               party_type='LABOUR', labour=labour, paid_by_owner=owner, amount='10',
+                               payment_mode='CASH', status=status, created_by=user)
+        txn(recent, date.today() - timedelta(days=1))
+        txn(ancient, date.today() - timedelta(days=900))           # old payment must NOT mean inactive
+        txn(cancelled_only, date.today(), status='CANCELLED')
+        txn(mixed, date.today(), status='CANCELLED')
+        txn(mixed, date.today() - timedelta(days=400))
+        before = (Txn.objects.count(), Labour_.objects.count())
+
+        executor = MigrationExecutor(connection)
+        executor.migrate([('core', '0002_project_labour_and_payment_batch')])
+
+        links = {pl.labour.name: pl.is_active for pl in ProjectLabour.objects.select_related('labour')}
+        self.assertEqual(links, {'Recent': True, 'Ancient': True, 'Mixed': True})
+        self.assertNotIn('CancelledOnly', links)
+        self.assertNotIn('NoPayments', links)
+        self.assertEqual((ExpenseTransaction.objects.count(), Labour.objects.count()), before)
+        self.assertFalse(ExpenseTransaction.objects.exclude(payment_batch=None).exists())

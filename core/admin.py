@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 from django.contrib import admin
+from django.utils import timezone
 
 from .models import (
     Contractor,
@@ -13,8 +16,10 @@ from .models import (
     Profile,
     Project,
     ProjectManager,
+    ProjectLabour,
     ProjectOwner,
     Supplier,
+    annotate_last_paid,
 )
 
 
@@ -63,6 +68,46 @@ class LabourAdmin(admin.ModelAdmin):
     list_display = ('name', 'type', 'mobile')
     list_filter = ('type',)
     search_fields = ('name', 'mobile')
+
+
+class LastPaidFilter(admin.SimpleListFilter):
+    """Helps spot labour who may have left. Informational: it never changes status by itself."""
+    title = 'last paid'
+    parameter_name = 'last_paid'
+
+    def lookups(self, request, model_admin):
+        return [('30', 'Within 30 days'), ('older', 'More than 30 days ago'), ('never', 'Never paid')]
+
+    def queryset(self, request, queryset):
+        cutoff = timezone.localdate() - timedelta(days=30)
+        if self.value() == '30':
+            return queryset.filter(last_paid__gte=cutoff)
+        if self.value() == 'older':
+            return queryset.filter(last_paid__lt=cutoff)
+        if self.value() == 'never':
+            return queryset.filter(last_paid__isnull=True)
+        return queryset
+
+
+@admin.register(ProjectLabour)
+class ProjectLabourAdmin(admin.ModelAdmin):
+    list_display = ('project', 'labour', 'is_active', 'last_paid')
+    list_filter = ('project', 'is_active', LastPaidFilter)
+    search_fields = ('project__code', 'project__name', 'labour__name', 'labour__mobile')
+    actions = ['mark_inactive']
+
+    def get_queryset(self, request):
+        return annotate_last_paid(super().get_queryset(request).select_related('project', 'labour'))
+
+    @admin.display(ordering='last_paid', description='Last paid')
+    def last_paid(self, obj):
+        return obj.last_paid
+
+    @admin.action(description='Mark selected as inactive')
+    def mark_inactive(self, request, queryset):
+        # queryset carries an annotation, so update by pk.
+        count = ProjectLabour.objects.filter(pk__in=queryset.values('pk')).update(is_active=False)
+        self.message_user(request, f'{count} labour marked inactive (nothing deleted).')
 
 
 @admin.register(Contractor)

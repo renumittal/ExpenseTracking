@@ -1,8 +1,10 @@
+import uuid
 from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models import OuterRef, Subquery
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +162,28 @@ class Labour(models.Model):
         return self.name
 
 
+class ProjectLabour(models.Model):
+    """
+    Which labour (person, from the Labour master) works on which project, and
+    whether they are currently active there. Status is per project: the same
+    Labour can be active on one project and inactive on another. Inactive rows
+    are never deleted, so a returning labour is re-activated (same Labour id).
+    """
+    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='project_labours')
+    labour = models.ForeignKey(Labour, on_delete=models.CASCADE, related_name='project_links')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('project', 'labour')
+        indexes = [
+            models.Index(fields=['project', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.labour.name} @ {self.project.code} ({"active" if self.is_active else "inactive"})'
+
+
 class Contractor(models.Model):
     name = models.CharField(max_length=255)
     work_type = models.CharField(max_length=100, blank=True)
@@ -243,6 +267,11 @@ class ExpenseTransaction(models.Model):
     )
     payee_name = models.CharField(max_length=255, null=True, blank=True, help_text='Used for MISCELLANEOUS expenses.')
 
+    payment_batch = models.UUIDField(
+        null=True, blank=True, editable=False, db_index=True,
+        help_text='Shared by the per-labour rows saved together from one Labour Payment entry.',
+    )
+
     paid_by_owner = models.ForeignKey(Owner, on_delete=models.PROTECT, related_name='expense_transactions')
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     payment_mode = models.CharField(max_length=20, choices=PaymentMode.choices)
@@ -314,6 +343,22 @@ class ExpenseTransaction(models.Model):
             self.remarks = reason
             update_fields.append('remarks')
         self.save(update_fields=update_fields)
+
+
+def annotate_last_paid(project_labour_qs):
+    """
+    Add `last_paid` (date of the latest NON-CANCELLED payment to this labour on this
+    project) to a ProjectLabour queryset. Informational only: it never decides
+    whether a labour is active -- that is the explicit ProjectLabour.is_active flag.
+    """
+    latest = (
+        ExpenseTransaction.objects
+        .filter(project=OuterRef('project'), labour=OuterRef('labour'))
+        .exclude(status=TransactionStatus.CANCELLED)
+        .order_by('-expense_date')
+        .values('expense_date')[:1]
+    )
+    return project_labour_qs.annotate(last_paid=Subquery(latest))
 
 
 # ---------------------------------------------------------------------------

@@ -10,6 +10,8 @@ router.register('manager-funds', views.ManagerFundViewSet, basename='managerfund
 router.register('manager-labour-distributions', views.ManagerLabourDistributionViewSet, basename='managerlabourdistribution')
 router.register('suppliers', views.SupplierViewSet, basename='supplier')
 router.register('labour', views.LabourViewSet, basename='labour')
+router.register('project-labour', views.ProjectLabourViewSet, basename='projectlabour')
+router.register('labour-payments', views.LabourPaymentViewSet, basename='labourpayment')
 router.register('contractor-contracts', views.ContractorContractViewSet, basename='contractorcontract')
 
 urlpatterns = [

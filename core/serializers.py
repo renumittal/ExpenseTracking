@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 
@@ -8,9 +10,13 @@ from .models import (
     Labour,
     ManagerFund,
     ManagerLabourDistribution,
+    Owner,
+    PaymentMode,
     Project,
+    ProjectLabour,
     Supplier,
 )
+from .permissions import is_admin
 
 
 class ProjectSerializer(serializers.ModelSerializer):
@@ -100,6 +106,87 @@ class LabourSerializer(serializers.ModelSerializer):
     class Meta:
         model = Labour
         fields = ['id', 'name', 'type', 'mobile']
+
+
+class ProjectLabourSerializer(serializers.ModelSerializer):
+    """A labour as seen on one project: master fields + that project's active flag."""
+    labour = serializers.IntegerField(source='labour_id', read_only=True)
+    name = serializers.CharField(source='labour.name', read_only=True)
+    type = serializers.CharField(source='labour.type', read_only=True)
+    mobile = serializers.CharField(source='labour.mobile', read_only=True)
+    last_paid = serializers.DateField(read_only=True)  # from annotate_last_paid(); informational only
+
+    class Meta:
+        model = ProjectLabour
+        fields = ['id', 'project', 'labour', 'name', 'type', 'mobile', 'is_active', 'last_paid']
+        read_only_fields = fields
+
+
+class NewProjectLabourSerializer(serializers.Serializer):
+    project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all())
+    name = serializers.CharField(max_length=255)
+    mobile = serializers.CharField(max_length=20)
+    type = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    remarks = serializers.CharField(required=False, allow_blank=True, default='')
+    # Answers to the "is this the same person?" question (see ProjectLabourViewSet.create).
+    use_labour = serializers.IntegerField(required=False, allow_null=True, default=None)
+    confirm_new = serializers.BooleanField(required=False, default=False)
+
+
+class LabourPaymentLineSerializer(serializers.Serializer):
+    labour = serializers.PrimaryKeyRelatedField(queryset=Labour.objects.all())
+    amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, min_value=Decimal('0.01'),
+        error_messages={
+            'required': 'Please enter an amount for every selected labour.',
+            'null': 'Please enter an amount for every selected labour.',
+            'invalid': 'Please enter a valid amount.',
+            'min_value': 'Please enter an amount greater than zero.',
+            'max_digits': 'The amount is too large.',
+            'max_whole_digits': 'The amount is too large.',
+            'max_decimal_places': 'Amounts can have at most 2 decimal places.',
+        },
+    )
+
+
+class LabourPaymentBatchSerializer(serializers.Serializer):
+    """One Labour Payment entry: shared expense fields + one amount per labour."""
+    project = serializers.PrimaryKeyRelatedField(queryset=Project.objects.all())
+    expense_date = serializers.DateField()
+    paid_by_owner = serializers.PrimaryKeyRelatedField(queryset=Owner.objects.all())
+    payment_mode = serializers.ChoiceField(choices=PaymentMode.choices)
+    reference_no = serializers.CharField(max_length=100, required=False, allow_null=True, allow_blank=True)
+    remarks = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    include_inactive = serializers.BooleanField(required=False, default=False)
+    payments = LabourPaymentLineSerializer(many=True, allow_empty=False)
+
+    def validate_payments(self, lines):
+        ids = [line['labour'].id for line in lines]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError('Each labour can appear only once in one entry.')
+        return lines
+
+    def validate(self, attrs):
+        request = self.context.get('request')
+        if request is not None and not is_admin(request.user) and attrs['paid_by_owner'].user_id != request.user.id:
+            raise serializers.ValidationError({'paid_by_owner': 'You can only record payments as yourself.'})
+
+        labours = [line['labour'] for line in attrs['payments']]
+        links = {
+            link.labour_id: link
+            for link in ProjectLabour.objects.filter(project=attrs['project'], labour__in=labours)
+        }
+        missing = [l.name for l in labours if l.id not in links]
+        if missing:
+            raise serializers.ValidationError({'payments': f'Not a labour of this project: {", ".join(missing)}.'})
+        if not attrs['include_inactive']:
+            inactive = [l.name for l in labours if not links[l.id].is_active]
+            if inactive:
+                verb = 'is' if len(inactive) == 1 else 'are'
+                raise serializers.ValidationError({
+                    'payments': f'{", ".join(inactive)} {verb} inactive. Please select from Show Inactive.'
+                })
+        return attrs
 
 
 class ContractorSerializer(serializers.ModelSerializer):
