@@ -6,6 +6,7 @@ from rest_framework import serializers
 from .models import (
     Contractor,
     ContractorContract,
+    ExpenseCategory,
     ExpenseTransaction,
     Labour,
     ManagerFund,
@@ -51,6 +52,15 @@ class ExpenseTransactionSerializer(serializers.ModelSerializer):
             instance.clean()
         except DjangoValidationError as exc:
             raise serializers.ValidationError(getattr(exc, 'message_dict', exc.messages))
+
+        # Contractor payments only: the contract must belong to the project being paid.
+        # (Labour / Supplier / Miscellaneous never reach this check.)
+        contract = attrs.get('contractor_contract')
+        if attrs.get('expense_category') == ExpenseCategory.CONTRACTOR and contract is not None:
+            if contract.project_id != attrs['project'].id:
+                raise serializers.ValidationError({
+                    'contractor_contract': 'This contract belongs to a different project.'
+                })
         return attrs
 
 
@@ -195,17 +205,29 @@ class ContractorSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'work_type', 'mobile', 'remarks']
 
 
+class NewContractorSerializer(serializers.Serializer):
+    name = serializers.CharField(max_length=255)
+    mobile = serializers.CharField(max_length=20)
+    work_type = serializers.CharField(max_length=100, required=False, allow_blank=True, default='')
+    remarks = serializers.CharField(required=False, allow_blank=True, default='')
+    # Answers to the "is this the same contractor?" question (see ContractorViewSet.create).
+    use_contractor = serializers.IntegerField(required=False, allow_null=True, default=None)
+    confirm_new = serializers.BooleanField(required=False, default=False)
+
+
 class ContractorContractSerializer(serializers.ModelSerializer):
     paid_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
     balance_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True, source='balance')
     overpayment_warning = serializers.SerializerMethodField()
     contractor_name = serializers.CharField(source='contractor.name', read_only=True)
+    contract_amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal('0.01'))
+    work_description = serializers.CharField(max_length=255)
 
     class Meta:
         model = ContractorContract
         fields = [
             'id', 'project', 'contractor', 'contractor_name', 'contract_date', 'contract_amount',
-            'remarks', 'paid_amount', 'balance_amount', 'overpayment_warning',
+            'work_description', 'remarks', 'paid_amount', 'balance_amount', 'overpayment_warning',
         ]
 
     def get_overpayment_warning(self, obj):

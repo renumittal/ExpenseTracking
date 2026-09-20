@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import (
+    Contractor,
     ContractorContract,
     ExpenseCategory,
     ExpenseTransaction,
@@ -30,11 +31,13 @@ from .models import (
 from .permissions import AdminOnly, RoleAllowed, get_role, is_admin
 from .serializers import (
     ContractorContractSerializer,
+    ContractorSerializer,
     ExpenseTransactionSerializer,
     LabourPaymentBatchSerializer,
     LabourSerializer,
     ManagerFundSerializer,
     ManagerLabourDistributionSerializer,
+    NewContractorSerializer,
     NewProjectLabourSerializer,
     ProjectLabourSerializer,
     ProjectSerializer,
@@ -182,6 +185,7 @@ class ProjectViewSet(viewsets.ReadOnlyModelViewSet):
                 'contract_id': contract.id,
                 'contractor_id': contract.contractor_id,
                 'contractor_name': contract.contractor.name,
+                'work_description': contract.work_description,
                 'contract_amount': contract.contract_amount,
                 'paid_amount': contract.paid_amount,
                 'balance': contract.balance,
@@ -557,8 +561,12 @@ class ContractorContractViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         if is_admin(user):
-            return ContractorContract.objects.all()
-        return ContractorContract.objects.filter(project__project_owners__owner__user=user).distinct()
+            qs = ContractorContract.objects.all()
+        else:
+            qs = ContractorContract.objects.filter(project__project_owners__owner__user=user).distinct()
+        if self.request.query_params.get('project'):
+            qs = qs.filter(project_id=self.request.query_params['project'])
+        return qs.select_related('contractor').order_by('id')
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -570,3 +578,75 @@ class ContractorContractViewSet(viewsets.ModelViewSet):
             if not owned:
                 raise PermissionDenied('You are not authorized on this project.')
         serializer.save()
+
+
+def _contractor_candidate(contractor):
+    tail = _digits(contractor.mobile)[-4:]
+    return {
+        'contractor': contractor.id,
+        'name': contractor.name,
+        'work_type': contractor.work_type,
+        'mobile_masked': f'******{tail}' if tail else '',
+    }
+
+
+class ContractorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    """
+    Contractor master.
+
+    GET  list of contractors.
+    POST {name, mobile, work_type?, remarks?}  add a contractor without creating duplicates
+         (same rules as project-labour): same mobile reuses that contractor; same name with
+         no mobile on file reuses it and fills the mobile; same name with a different mobile
+         answers 409 with candidates and needs {use_contractor: <id>} or {confirm_new: true}.
+         A contractor belongs to no project; the project-specific deal is a ContractorContract.
+    """
+
+    serializer_class = ContractorSerializer
+    permission_classes = [RoleAllowed]
+    allowed_roles = {Role.OWNER}
+    queryset = Contractor.objects.order_by('name', 'id')
+    pagination_class = None
+
+    def create(self, request):
+        ser = NewContractorSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+        name = ' '.join(data['name'].split())
+        mobile = _digits(data['mobile'])[-10:]
+        if not name:
+            raise ValidationError({'name': 'This field may not be blank.'})
+        if len(mobile) < 10:
+            raise ValidationError({'mobile': 'Enter a valid mobile number.'})
+
+        with transaction.atomic():
+            everyone = list(Contractor.objects.order_by('id'))
+            same_name = [c for c in everyone if _norm(c.name) == _norm(name)]
+            same_mobile = [c for c in everyone if _digits(c.mobile)[-10:] == mobile]
+            contractor = None
+
+            if data['use_contractor']:
+                contractor = next((c for c in same_name + same_mobile if c.id == data['use_contractor']), None)
+                if contractor is None:
+                    raise ValidationError({'use_contractor': 'That is not a matching contractor.'})
+            elif same_mobile:
+                contractor = same_mobile[0]
+            else:
+                contractor = next((c for c in same_name if not c.mobile.strip()), None)
+                if contractor is None and same_name and not data['confirm_new']:
+                    return Response({
+                        'code': 'possible_duplicate',
+                        'detail': 'A contractor with this name already exists. Is it the same contractor?',
+                        'candidates': [_contractor_candidate(c) for c in same_name],
+                    }, status=status.HTTP_409_CONFLICT)
+
+            reused = contractor is not None
+            if contractor is None:
+                contractor = Contractor.objects.create(
+                    name=name, mobile=mobile, work_type=data['work_type'].strip(), remarks=data['remarks'].strip())
+            elif not contractor.mobile.strip():
+                contractor.mobile = mobile
+                contractor.save(update_fields=['mobile'])
+        body = ContractorSerializer(contractor).data
+        body['reused'] = reused
+        return Response(body, status=status.HTTP_200_OK if reused else status.HTTP_201_CREATED)

@@ -407,6 +407,153 @@
         send({});
       };
     }
+    // ----- Contractor: pick a contract of this project, or add a contractor + contract -----
+    function contractorModal() {
+      const box = document.createElement('div');
+      box.className = 'modal';
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया ठेकेदार" novalidate>
+        <h2 style="margin-top:0" id="m-title">➕ नया ठेकेदार <small>Add Contractor</small></h2>
+        <div id="m-err"></div>
+        <div id="m-fields">
+          <label for="m-name">नाम <small>Name</small> *</label>
+          <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
+          <label for="m-type">काम का प्रकार <small>Work Type (optional)</small></label>
+          <input id="m-type" type="text" autocomplete="off" placeholder="जैसे: RCC, बिजली, प्लंबिंग" enterkeyhint="next">
+          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
+          <button class="btn green" type="submit" id="m-save">➡ आगे <span class="sub">NEXT</span></button>
+        </div>
+        <div id="m-dup" hidden></div>
+        <div id="m-contract" hidden>
+          <p class="muted">ठेकेदार: <b id="m-cname"></b></p>
+          <label for="c-work">काम का विवरण <small>Work Description</small> *</label>
+          <input id="c-work" type="text" autocomplete="off" autocapitalize="sentences" placeholder="जैसे: RCC + Structure" enterkeyhint="next">
+          <label for="c-amt">कुल ठेका राशि <small>Contract Amount</small> *</label>
+          <div class="rupee"><span>₹</span><input id="c-amt" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
+          <label for="c-date">ठेके की तारीख <small>Contract Date</small> *</label>
+          <input id="c-date" type="date" value="${today()}">
+          <label for="c-rem">जानकारी <small>Remarks (optional)</small></label>
+          <input id="c-rem" type="text" autocomplete="off" enterkeyhint="done">
+          <button class="btn green" type="submit" id="c-save">💾 ठेका सेव करें <span class="sub">SAVE CONTRACT</span></button>
+        </div>
+        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+      </form>`;
+      document.body.appendChild(box);
+      const m = id => box.querySelector('#' + id);
+      const close = () => {
+        box.remove();
+        document.removeEventListener('keydown', onKey);
+        window.removeEventListener('hashchange', close);
+      };
+      const onKey = e => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      window.addEventListener('hashchange', close);
+      m('m-cancel').onclick = close;
+      m('m-name').focus();
+      let contractor = null;   // set once the contractor exists on the server
+
+      // Step 2: the contractor is known; now the project-specific contract.
+      function contractStep(c) {
+        contractor = c;
+        m('m-fields').hidden = true; m('m-dup').hidden = true; m('m-contract').hidden = false;
+        m('m-title').innerHTML = '➕ नया ठेका <small>Add Contract</small>';
+        m('m-cname').textContent = c.name;
+        m('m-err').innerHTML = c.reused ? '<div class="msg info">यह ठेकेदार पहले से था — इसी को चुना है.</div>' : '';
+        m('c-work').focus();
+      }
+
+      // Same name, different mobile: ask "is this the same contractor?".
+      function askSame(cands, send) {
+        m('m-fields').hidden = true;
+        const dup = m('m-dup');
+        dup.hidden = false;
+        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही Contractor है? <small>Is this the same contractor?</small></h2>` +
+          cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
+            <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
+            ${c.work_type ? `<div class="muted">${esc(c.work_type)}</div>` : ''}
+            <button class="btn green" type="button" data-use="${c.contractor}" style="margin-bottom:0">✔ यही है <span class="sub">Use Existing Contractor</span></button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ अलग ठेकेदार है <span class="sub">Different Contractor</span></button>`;
+        dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_contractor: Number(b.dataset.use) }));
+        m('m-new').onclick = () => send({ confirm_new: true });
+      }
+
+      async function saveContractor(extra) {
+        const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
+        const btns = box.querySelectorAll('button');
+        btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
+        m('m-err').innerHTML = '';
+        try {
+          const r = await api('contractors/', { method: 'POST', body: {
+            name, mobile, work_type: m('m-type').value.trim(), remarks: m('m-rem').value.trim(), ...extra } });
+          btns.forEach(b => { b.disabled = false; });
+          contractStep(r);
+        } catch (e) {
+          btns.forEach(b => { b.disabled = false; });
+          if (e.status === 409 && e.data && e.data.code === 'possible_duplicate') { askSame(e.data.candidates || [], saveContractor); return; }
+          m('m-fields').hidden = false; m('m-dup').hidden = true;
+          m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
+        }
+      }
+
+      async function saveContract() {
+        const work = m('c-work').value.trim(), cents = paise(m('c-amt').value);
+        const bad = (id, text) => { m('m-err').innerHTML = errBox(text); m(id).focus(); };
+        if (!work) return bad('c-work', 'कृपया काम का विवरण भरें.');
+        if (!(cents > 0)) return bad('c-amt', 'कृपया ठेका राशि भरें (0 से ज़्यादा).');
+        if (cents >= 1e12) return bad('c-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.');
+        if (!m('c-date').value) return bad('c-date', 'कृपया तारीख चुनिए.');
+        const btns = box.querySelectorAll('button');
+        btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
+        m('m-err').innerHTML = '';
+        let made;
+        try {
+          made = await api('contractor-contracts/', { method: 'POST', body: {
+            project: state.project.id, contractor: contractor.id, work_description: work,
+            contract_amount: paiseText(cents), contract_date: m('c-date').value, remarks: m('c-rem').value.trim() } });
+        } catch (e) {
+          btns.forEach(b => { b.disabled = false; });
+          m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
+          return;
+        }
+        close();
+        try {
+          state.names = null;
+          names = await loadNames(true);
+          if (f.cat !== 'CONTRACTOR') return;
+          drawWho();
+          selectContract(String(made.id));
+          const card = document.querySelector(`[data-contract="${made.id}"]`);
+          if (card) card.scrollIntoView({ block: 'center' });
+        } catch (err) { console.error('after add contract', err); }
+      }
+
+      box.querySelector('form').onsubmit = ev => {
+        ev.preventDefault();
+        if (contractor) return saveContract();
+        const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
+        if (!name) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
+        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        saveContractor({});
+      };
+    }
+    function selectContract(id) {
+      f.contractId = id;
+      document.querySelectorAll('[data-contract]').forEach(b => b.classList.toggle('on', b.dataset.contract === id));
+      if ($('e-who')) setErr('e-who', '');
+    }
+    const contractCard = c => {
+      const bal = Number(c.balance_amount);
+      return `<button type="button" class="card pick" data-contract="${c.id}">
+        <b style="font-size:1.3rem">${esc(c.contractor_name)}</b>
+        ${c.work_description ? `<div class="muted">${esc(c.work_description)}</div>` : ''}
+        <div class="row"><span class="muted">पूरा काम <small>Contract</small></span><span>${money(c.contract_amount)}</span></div>
+        <div class="row"><span class="muted">अब तक दिया <small>Paid</small></span><span>${money(c.paid_amount)}</span></div>
+        <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'} <small>Balance</small></b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>
+      </button>`;
+    };
+
     async function drawLabour() {
       const gen = ++labGen;
       $('s-who').innerHTML = `
@@ -484,10 +631,11 @@
       if (!cat) {
         html = '<div class="q"><span class="num">3</span>किसको दिया? <small>Name</small></div><p class="muted">पहले ऊपर बताइए कि किस चीज़ का खर्च है.</p>';
       } else if (cat === 'CONTRACTOR') {
-        html = `<label for="contract"><span class="num">3</span>किस ठेकेदार को दिया? <small>Contractor</small></label>` +
+        html = `<div class="q"><span class="num">3</span>किस ठेकेदार को दिया? <small>Contractor</small></div>
+          <button class="btn line" type="button" id="cadd">➕ नया ठेकेदार <span class="sub">Add Contractor</span></button>` +
           (names.contracts.length
-            ? `<select id="contract"><option value="">— ठेकेदार चुनिए —</option>${names.contracts.map(c => `<option value="${c.id}">${esc(c.contractor_name)}</option>`).join('')}</select>`
-            : '<div class="msg info">इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। कृपया एडमिन से जुड़वाइए.</div>') +
+            ? names.contracts.map(contractCard).join('')
+            : '<div class="msg info">इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। "नया ठेकेदार" दबाइए.</div>') +
           '<div class="field-error" id="e-who"></div>';
       } else {
         const label = cat === 'LABOUR' ? 'किस मज़दूर को दिया?' : cat === 'SUPPLIER' ? 'किस सप्लायर को दिया?' : 'किसको दिया?';
@@ -498,7 +646,8 @@
       }
       $('s-who').innerHTML = html;
       f.name = ''; f.contractId = ''; f.what = '';
-      if ($('contract')) $('contract').onchange = e => { f.contractId = e.target.value; setErr('e-who', ''); };
+      if ($('cadd')) $('cadd').onclick = contractorModal;
+      document.querySelectorAll('[data-contract]').forEach(b => b.onclick = () => selectContract(b.dataset.contract));
       if ($('what')) $('what').oninput = e => { f.what = e.target.value; };
       if ($('name')) $('name').oninput = e => { f.name = e.target.value; setErr('e-who', ''); drawSuggest(); };
     }
@@ -697,6 +846,7 @@
       ${d.contractor_positions.length ? `<h2>ठेकेदार का हिसाब</h2>` + d.contractor_positions.map(c => {
         const bal = Number(c.balance);
         return `<div class="card"><b>${esc(c.contractor_name)}</b>
+          ${c.work_description ? `<div class="muted">${esc(c.work_description)}</div>` : ''}
           <div class="row"><span class="muted">पूरा काम</span><span>${money(c.contract_amount)}</span></div>
           <div class="row"><span class="muted">अब तक दिया</span><span>${money(c.paid_amount)}</span></div>
           <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div></div>`;
@@ -713,12 +863,24 @@
       let rows, total;
       if (key === 'LABOUR') { const r = await api('reports/labour/' + q); rows = r.labour.map(x => [x.labour_name, x.total_paid]); total = r.grand_total; }
       else if (key === 'SUPPLIER') { const r = await api('reports/supplier/' + q); rows = r.suppliers.map(x => [x.supplier_name, x.total_paid]); total = r.grand_total; }
-      else if (key === 'CONTRACTOR') { const r = await api('reports/contractor/' + q); rows = r.contractor_totals.map(x => [x.contractor_name, x.paid_amount]); total = rows.reduce((s, x) => s + Number(x[1]), 0); }
+      else if (key === 'CONTRACTOR') {
+        // One card per contract, so a contractor with several contracts shows each one.
+        const r = await api('reports/contractor/' + q);
+        total = r.contracts.reduce((s, x) => s + Number(x.paid_amount), 0);
+        rows = r.contracts.map(x => {
+          const bal = Number(x.balance);
+          return `<b>${esc(x.contractor_name)}</b>
+            ${x.work_description ? `<div class="muted">${esc(x.work_description)}</div>` : ''}
+            <div class="row"><span class="muted">पूरा काम</span><span>${money(x.contract_amount)}</span></div>
+            <div class="row"><span class="muted">अब तक दिया</span><span>${money(x.paid_amount)}</span></div>
+            <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>`;
+        });
+      }
       else { const r = await api('reports/misc/' + q); rows = r.expense_types.map(x => [x.expense_type, x.total]); total = r.grand_total; }
       $view.innerHTML = `
         <h1>${c.icon} ${c.hi} <small>${c.en}</small></h1>
         <div class="card"><div class="muted">कुल खर्च <small>Total</small></div><div class="big-total">${money(total)}</div></div>` +
-        (rows.length ? rows.map(([n, v]) => `<div class="card"><div class="row"><b>${esc(n)}</b><span class="amount">${money(v)}</span></div></div>`).join('')
+        (rows.length ? rows.map(row => `<div class="card">${key === 'CONTRACTOR' ? row : `<div class="row"><b>${esc(row[0])}</b><span class="amount">${money(row[1])}</span></div>`}</div>`).join('')
           : '<div class="empty"><div class="ico">📭</div>अभी कोई खर्च नहीं है.</div>') +
         `<a class="btn line" href="#/list?cat=${key}">📋 सारे खर्च देखें <span class="sub">View all</span></a>`;
     } catch (e) { $view.innerHTML = errBox(friendly(e)); }

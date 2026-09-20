@@ -154,6 +154,7 @@ class ContractorReportView(APIView):
                 'contract_id': c.id,
                 'contractor_id': c.contractor_id,
                 'contractor_name': c.contractor.name,
+                'work_description': c.work_description,
                 'contract_amount': c.contract_amount,
                 'paid_amount': c.paid_amount,
                 'balance': c.balance,

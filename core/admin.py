@@ -119,7 +119,7 @@ class ContractorAdmin(admin.ModelAdmin):
 
 @admin.register(ContractorContract)
 class ContractorContractAdmin(admin.ModelAdmin):
-    list_display = ('contractor', 'project', 'contract_date', 'contract_amount', 'paid_amount', 'balance')
+    list_display = ('contractor', 'project', 'work_description', 'contract_date', 'contract_amount', 'paid_amount', 'balance')
     list_filter = ('project', 'contract_date')
     search_fields = ('contractor__name', 'project__code', 'project__name')
 

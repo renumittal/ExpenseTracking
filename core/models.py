@@ -199,6 +199,11 @@ class ContractorContract(models.Model):
     contractor = models.ForeignKey(Contractor, on_delete=models.CASCADE, related_name='contracts')
     contract_date = models.DateField()
     contract_amount = models.DecimalField(max_digits=12, decimal_places=2)
+    work_description = models.CharField(
+        max_length=255, blank=True, default='',
+        help_text='What this contract covers. One contractor may have several contracts on a project, '
+                  'so this (with the amount) tells them apart. Required by the API.',
+    )
     remarks = models.TextField(blank=True)
 
     class Meta:

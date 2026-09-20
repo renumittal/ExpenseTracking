@@ -867,6 +867,201 @@ class AddLabourDuplicateTests(APITestCase):
         self.assertEqual(r.data['last_paid'], None)
 
 
+class ContractorFlowTests(APITestCase):
+    """Contractor master (de-duplicated), several contracts per project, project-scoped payments."""
+
+    def setUp(self):
+        self.project = Project.objects.create(name='Plot 150', code='P150')
+        self.other_project = Project.objects.create(name='Plot 200', code='P200')
+        self.user = User.objects.create_user(username='own', password='pass12345')
+        Profile.objects.create(user=self.user, role=Role.OWNER)
+        self.owner = Owner.objects.create(user=self.user, name='Ramesh')
+        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        ProjectOwner.objects.create(project=self.other_project, owner=self.owner)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
+        self.raj = Contractor.objects.create(name='Raj Construction', mobile='98765 43210')
+
+    def add_contractor(self, **kw):
+        return self.client.post('/api/contractors/', {'name': 'Suresh Electric', 'mobile': '9812345678', **kw}, format='json')
+
+    def add_contract(self, contractor=None, project=None, **kw):
+        return self.client.post('/api/contractor-contracts/', {
+            'project': (project or self.project).id, 'contractor': (contractor or self.raj).id,
+            'work_description': 'RCC + Structure', 'contract_amount': '500000.00',
+            'contract_date': '2026-09-01', **kw}, format='json')
+
+    def pay(self, contract, amount, project=None, **kw):
+        return self.client.post('/api/expense-transactions/', {
+            'project': (project or self.project).id, 'expense_date': '2026-09-05',
+            'expense_category': ExpenseCategory.CONTRACTOR, 'expense_type': 'Contractor Payment',
+            'party_type': PartyType.CONTRACTOR, 'contractor_contract': contract.id,
+            'paid_by_owner': self.owner.id, 'amount': amount, 'payment_mode': PaymentMode.CASH, **kw}, format='json')
+
+    def contract_row(self, contract):
+        return self.client.get(f'/api/contractor-contracts/{contract.id}/').data
+
+    # 1-2. Contractor creation and duplicate handling
+    def test_contractor_is_created(self):
+        r = self.add_contractor(work_type='Electrical', remarks='ok')
+        self.assertEqual(r.status_code, 201)
+        self.assertFalse(r.data['reused'])
+        c = Contractor.objects.get(pk=r.data['id'])
+        self.assertEqual((c.name, c.mobile, c.work_type), ('Suresh Electric', '9812345678', 'Electrical'))
+
+    def test_contractor_needs_name_and_valid_mobile(self):
+        self.assertEqual(self.add_contractor(name='  ').status_code, 400)
+        self.assertEqual(self.add_contractor(mobile='12345').status_code, 400)
+        self.assertEqual(self.add_contractor(mobile='').status_code, 400)
+
+    def test_same_mobile_reuses_contractor(self):
+        n = Contractor.objects.count()
+        r = self.add_contractor(name='Raj C.', mobile='+91 98765-43210')
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.data['reused'])
+        self.assertEqual(r.data['id'], self.raj.id)
+        self.assertEqual(Contractor.objects.count(), n)
+        self.assertEqual(Contractor.objects.get(pk=self.raj.id).name, 'Raj Construction')
+
+    def test_same_name_without_mobile_reuses_and_fills_mobile(self):
+        legacy = Contractor.objects.create(name='Old Timer', mobile='')
+        n = Contractor.objects.count()
+        r = self.add_contractor(name=' old   TIMER ', mobile='9111111111')
+        self.assertEqual(r.data['id'], legacy.id)
+        self.assertEqual(Contractor.objects.count(), n)
+        self.assertEqual(Contractor.objects.get(pk=legacy.id).mobile, '9111111111')
+
+    def test_same_name_different_mobile_asks_then_honours_the_answer(self):
+        n = Contractor.objects.count()
+        r = self.add_contractor(name='raj construction', mobile='9000000001')
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(r.data['code'], 'possible_duplicate')
+        self.assertEqual(r.data['candidates'][0]['contractor'], self.raj.id)
+        self.assertEqual(r.data['candidates'][0]['mobile_masked'], '******3210')
+        self.assertEqual(Contractor.objects.count(), n)
+
+        used = self.add_contractor(name='raj construction', mobile='9000000001', use_contractor=self.raj.id)
+        self.assertEqual(used.data['id'], self.raj.id)
+        self.assertEqual(Contractor.objects.count(), n)
+
+        different = self.add_contractor(name='raj construction', mobile='9000000001', confirm_new=True)
+        self.assertEqual(different.status_code, 201)
+        self.assertNotEqual(different.data['id'], self.raj.id)
+        self.assertEqual(Contractor.objects.count(), n + 1)
+
+    def test_use_contractor_must_be_a_real_candidate(self):
+        other = Contractor.objects.create(name='Unrelated', mobile='9222222222')
+        r = self.add_contractor(name='Raj Construction', mobile='9000000001', use_contractor=other.id)
+        self.assertEqual(r.status_code, 400)
+
+    def test_manager_cannot_use_contractor_endpoint(self):
+        mgr = User.objects.create_user(username='mgr', password='pass12345')
+        Profile.objects.create(user=mgr, role=Role.MANAGER)
+        self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=mgr).key)
+        self.assertEqual(self.add_contractor().status_code, 403)
+        self.assertEqual(self.client.get('/api/contractors/').status_code, 403)
+
+    # 3-4. Several contracts on one project
+    def test_same_contractor_can_have_two_contracts_on_one_project(self):
+        a = self.add_contract(work_description='RCC + Structure', contract_amount='500000')
+        b = self.add_contract(work_description='Plaster', contract_amount='120000')
+        self.assertEqual((a.status_code, b.status_code), (201, 201))
+        self.assertEqual(ContractorContract.objects.filter(project=self.project, contractor=self.raj).count(), 2)
+        self.assertEqual(a.data['work_description'], 'RCC + Structure')
+
+    def test_two_contractors_on_the_same_project(self):
+        suresh = Contractor.objects.create(name='Suresh', mobile='9812345678')
+        self.assertEqual(self.add_contract().status_code, 201)
+        self.assertEqual(self.add_contract(contractor=suresh, work_description='Wiring').status_code, 201)
+        rows = self.client.get('/api/contractor-contracts/', {'project': self.project.id}).data
+        self.assertEqual({r['contractor_name'] for r in rows}, {'Raj Construction', 'Suresh'})
+
+    # 5. Contract validation
+    def test_contract_amount_must_be_positive(self):
+        for bad in ('0', '0.00', '-5'):
+            self.assertEqual(self.add_contract(contract_amount=bad).status_code, 400, bad)
+        self.assertEqual(ContractorContract.objects.count(), 0)
+
+    def test_work_description_is_required_on_create(self):
+        self.assertEqual(self.add_contract(work_description='').status_code, 400)
+        self.assertEqual(self.add_contract(work_description='   ').status_code, 400)
+
+    # 6. ?project= filter
+    def test_project_filter_returns_only_that_projects_contracts(self):
+        mine = ContractorContract.objects.create(project=self.project, contractor=self.raj, contract_date='2026-09-01', contract_amount='10', work_description='A')
+        theirs = ContractorContract.objects.create(project=self.other_project, contractor=self.raj, contract_date='2026-09-01', contract_amount='20', work_description='B')
+        ids = lambda **q: {r['id'] for r in self.client.get('/api/contractor-contracts/', q).data}
+        self.assertEqual(ids(project=self.project.id), {mine.id})
+        self.assertEqual(ids(project=self.other_project.id), {theirs.id})
+        self.assertEqual(ids(), {mine.id, theirs.id})
+
+    def test_owner_cannot_create_contract_on_a_project_they_are_not_linked_to(self):
+        stranger_project = Project.objects.create(name='Not mine', code='NM')
+        self.assertEqual(self.add_contract(project=stranger_project).status_code, 403)
+
+    # 7-8. Payment project rule
+    def test_payment_against_contract_of_the_same_project_succeeds(self):
+        contract = ContractorContract.objects.create(project=self.project, contractor=self.raj, contract_date='2026-09-01', contract_amount='1000')
+        r = self.pay(contract, '250.00')
+        self.assertEqual(r.status_code, 201, r.data)
+        self.assertEqual(r.data['contractor_contract'], contract.id)
+
+    def test_payment_against_another_projects_contract_is_rejected(self):
+        contract = ContractorContract.objects.create(project=self.other_project, contractor=self.raj, contract_date='2026-09-01', contract_amount='1000')
+        r = self.pay(contract, '250.00', project=self.project)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('contractor_contract', r.data)
+        self.assertEqual(ExpenseTransaction.objects.count(), 0)
+
+    # 9-12. Accounting
+    def test_multiple_payments_cancel_balance_and_overpayment(self):
+        contract = ContractorContract.objects.create(project=self.project, contractor=self.raj, contract_date='2026-09-01', contract_amount='1000')
+        for amount in ('300', '200'):
+            self.assertEqual(self.pay(contract, amount).status_code, 201)
+        row = self.contract_row(contract)
+        self.assertEqual(Decimal(row['paid_amount']), Decimal('500'))
+        self.assertEqual(Decimal(row['balance_amount']), Decimal('500'))
+        self.assertIsNone(row['overpayment_warning'])
+
+        last = ExpenseTransaction.objects.filter(contractor_contract=contract).order_by('-id').first()
+        self.assertEqual(self.client.post(f'/api/expense-transactions/{last.id}/cancel/', {'remarks': 'typo'}).status_code, 200)
+        row = self.contract_row(contract)
+        self.assertEqual(Decimal(row['paid_amount']), Decimal('300'))
+        self.assertEqual(Decimal(row['balance_amount']), Decimal('700'))
+
+        # Overpaying is still allowed (warning only).
+        self.assertEqual(self.pay(contract, '900').status_code, 201)
+        row = self.contract_row(contract)
+        self.assertEqual(Decimal(row['balance_amount']), Decimal('-200'))
+        self.assertIsNotNone(row['overpayment_warning'])
+
+    def test_two_contracts_of_one_contractor_keep_separate_totals_in_reports(self):
+        a = ContractorContract.objects.create(project=self.project, contractor=self.raj, contract_date='2026-09-01', contract_amount='1000', work_description='RCC')
+        b = ContractorContract.objects.create(project=self.project, contractor=self.raj, contract_date='2026-09-02', contract_amount='400', work_description='Plaster')
+        self.pay(a, '600')
+        self.pay(b, '100')
+        report = self.client.get('/api/reports/contractor/', {'project': self.project.id}).data
+        by_work = {r['work_description']: r for r in report['contracts']}
+        self.assertEqual(Decimal(by_work['RCC']['balance']), Decimal('400'))
+        self.assertEqual(Decimal(by_work['Plaster']['balance']), Decimal('300'))
+        self.assertEqual(Decimal(report['contractor_totals'][0]['paid_amount']), Decimal('700'))
+        dash = self.client.get(f'/api/projects/{self.project.id}/dashboard/').data
+        self.assertEqual({p['work_description'] for p in dash['contractor_positions']}, {'RCC', 'Plaster'})
+
+    # 13-14. The project rule is contractor-only
+    def test_project_rule_does_not_affect_labour_supplier_or_misc(self):
+        base = {'project': self.project.id, 'expense_date': '2026-09-05', 'paid_by_owner': self.owner.id,
+                'amount': '10.00', 'payment_mode': PaymentMode.CASH, 'expense_type': 'x'}
+        labour = Labour.objects.create(name='Mohan')
+        supplier = Supplier.objects.create(name='Sharma Bricks')
+        cases = [
+            {'expense_category': 'LABOUR', 'party_type': 'LABOUR', 'labour': labour.id},
+            {'expense_category': 'SUPPLIER', 'party_type': 'SUPPLIER', 'supplier': supplier.id},
+            {'expense_category': 'MISCELLANEOUS', 'party_type': 'NONE', 'payee_name': 'Tea'},
+        ]
+        for extra in cases:
+            self.assertEqual(self.client.post('/api/expense-transactions/', {**base, **extra}, format='json').status_code, 201, extra)
+
+
 class BackfillMigrationTests(TransactionTestCase):
     """Historical payments -> ProjectLabour rows, using the real 0001 -> 0002 migration."""
 

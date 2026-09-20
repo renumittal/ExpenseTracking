@@ -12,6 +12,7 @@ router.register('suppliers', views.SupplierViewSet, basename='supplier')
 router.register('labour', views.LabourViewSet, basename='labour')
 router.register('project-labour', views.ProjectLabourViewSet, basename='projectlabour')
 router.register('labour-payments', views.LabourPaymentViewSet, basename='labourpayment')
+router.register('contractors', views.ContractorViewSet, basename='contractor')
 router.register('contractor-contracts', views.ContractorContractViewSet, basename='contractorcontract')
 
 urlpatterns = [
