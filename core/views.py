@@ -1,9 +1,10 @@
 import uuid
 
 from django.conf import settings
+from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
-from django.db.models import F, Max, Sum
+from django.db.models import F, Max, Q, Sum
 from rest_framework import mixins, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
@@ -83,7 +84,19 @@ class LoginView(ObtainAuthToken):
     permission_classes = [AllowAny]
 
     def post(self, request, *args, **kwargs):
-        serializer = self.serializer_class(data=request.data, context={'request': request})
+        data = request.data.copy()
+        # Create User treats usernames/emails case-insensitively; log in the same way (phones auto-capitalise).
+        who = (data.get('username') or '').strip()
+        if who:
+            User = get_user_model()
+            matches = list(User.objects.filter(Q(username__iexact=who) | Q(email__iexact=who))[:2])
+            exact = [u for u in matches if u.username == who]
+            if exact:
+                matches = exact
+            if len(matches) == 1:
+                who = matches[0].username
+            data['username'] = who
+        serializer = self.serializer_class(data=data, context={'request': request})
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         token, _ = Token.objects.get_or_create(user=user)
