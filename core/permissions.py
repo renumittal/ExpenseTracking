@@ -117,6 +117,12 @@ CAN_VIEW_BILL = 'canViewBill'
 CAN_VIEW_MANAGER_FUND = 'canViewManagerFund'
 CAN_GIVE_MANAGER_FUND = 'canGiveManagerFund'
 CAN_DISTRIBUTE_MANAGER_FUND = 'canDistributeManagerFund'
+CAN_EDIT_EXPENSE = 'canEditExpense'
+CAN_DELETE_EXPENSE = 'canDeleteExpense'
+CAN_MANAGE_USERS = 'canManageUsers'
+CAN_MANAGE_PROJECT_MEMBERS = 'canManageProjectMembers'
+CAN_MANAGE_PROJECT_SETTINGS = 'canManageProjectSettings'
+CAN_RESET_USER_PASSWORD = 'canResetUserPassword'
 
 PERMISSION_DEFAULTS = {
     CAN_UPLOAD_BILL: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
@@ -125,6 +131,13 @@ PERMISSION_DEFAULTS = {
     CAN_VIEW_MANAGER_FUND: {'ADMIN': True, 'OWNER': True, 'MANAGER': True, 'VIEWER': False},
     CAN_GIVE_MANAGER_FUND: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
     CAN_DISTRIBUTE_MANAGER_FUND: {'ADMIN': True, 'OWNER': False, 'MANAGER': True, 'VIEWER': False},
+    # Expense correction and people management. Same defaults as the web app's built-in matrix.
+    CAN_EDIT_EXPENSE: {'ADMIN': True, 'OWNER': True, 'MANAGER': True, 'VIEWER': False},
+    CAN_DELETE_EXPENSE: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
+    CAN_MANAGE_USERS: {'ADMIN': True, 'OWNER': False, 'MANAGER': False, 'VIEWER': False},
+    CAN_MANAGE_PROJECT_MEMBERS: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
+    CAN_MANAGE_PROJECT_SETTINGS: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
+    CAN_RESET_USER_PASSWORD: {'ADMIN': True, 'OWNER': True, 'MANAGER': False, 'VIEWER': False},
 }
 
 

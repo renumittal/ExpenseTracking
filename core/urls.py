@@ -1,7 +1,7 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from . import reports, views
+from . import people, reports, views
 
 router = DefaultRouter()
 router.register('projects', views.ProjectViewSet, basename='project')
@@ -18,8 +18,14 @@ router.register('contractor-contracts', views.ContractorContractViewSet, basenam
 urlpatterns = [
     path('auth/login/', views.LoginView.as_view(), name='login'),
     path('auth/logout/', views.LogoutView.as_view(), name='logout'),
+    path('auth/change-password/', people.ChangePasswordView.as_view(), name='change-password'),
     path('me/', views.MeView.as_view(), name='me'),
     path('manager-summary/', views.ManagerSummaryView.as_view(), name='manager-summary'),
+    path('users/', people.UserListView.as_view(), name='users'),
+    path('users/<int:user_id>/reset-password/', people.ResetPasswordView.as_view(), name='reset-password'),
+    path('permission-matrix/', people.PermissionMatrixView.as_view(), name='permission-matrix'),
+    path('projects/<int:pk>/members/', people.ProjectMembersView.as_view(), name='project-members'),
+    path('projects/<int:pk>/members/<int:user_id>/', people.ProjectMemberDetailView.as_view(), name='project-member'),
     path('projects/<int:pk>/people/', views.ProjectPeopleView.as_view(), name='project-people'),
 
     path('reports/category-expense/', reports.CategoryExpenseReportView.as_view(), name='report-category-expense'),

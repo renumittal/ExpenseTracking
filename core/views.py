@@ -36,6 +36,9 @@ from .models import (
 from . import bills, ledger
 from .permissions import (
     AdminOnly,
+    CAN_DELETE_EXPENSE,
+    CAN_EDIT_EXPENSE,
+    CAN_MANAGE_PROJECT_SETTINGS,
     CAN_UPLOAD_BILL,
     CAN_VIEW_BILL,
     RoleAllowed,
@@ -48,10 +51,13 @@ from .permissions import (
     is_admin,
     is_owner,
     is_project_member,
+    owns_project,
 )
+from .people import stored_matrix
 from .serializers import (
     ContractorContractSerializer,
     ContractorSerializer,
+    ExpenseTransactionEditSerializer,
     ExpenseTransactionSerializer,
     LabourPaymentBatchSerializer,
     LabourSerializer,
@@ -109,6 +115,7 @@ class MeView(APIView):
         manager = getattr(user, 'manager_profile', None)
         permissions, project_permissions = effective_permissions(user)
         return Response({
+            'user_id': user.id,
             'username': user.username,
             'role': get_role(user),
             'owner_id': owner.id if owner else None,
@@ -118,6 +125,8 @@ class MeView(APIView):
             # What the server will allow (the API enforces the same). The web app uses it to show/hide things.
             'permissions': permissions,
             'project_permissions': project_permissions,
+            # The saved Role & Permissions matrix ({permission: {role: bool}}); the same on every device.
+            'permission_matrix': stored_matrix(),
         })
 
 
@@ -149,12 +158,16 @@ class ProjectPeopleView(APIView):
 # Owner-facing endpoints
 # ---------------------------------------------------------------------------
 
-class ProjectViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
-    """Admin: all projects (and the only one who can create). Owner: only projects they're linked to via ProjectOwner."""
+class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
+    """
+    Admin: all projects (and the only one who can create). Owner: only projects they're linked to via ProjectOwner.
+    PATCH (canManageProjectSettings, on a project you own) edits the project's details; its code never changes.
+    """
 
     serializer_class = ProjectSerializer
     permission_classes = [RoleAllowed]
     allowed_roles = {Role.OWNER}
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_permissions(self):
         if self.action == 'create':
@@ -166,6 +179,13 @@ class ProjectViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
         if is_admin(user):
             return Project.objects.all()
         return Project.objects.filter(project_owners__owner__user=user).distinct()
+
+    def perform_update(self, serializer):
+        user = self.request.user
+        if not (has_permission(user, CAN_MANAGE_PROJECT_SETTINGS) and owns_project(user, serializer.instance)):
+            raise PermissionDenied('You cannot change this project\'s settings.')
+        serializer.validated_data.pop('code', None)
+        serializer.save()
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
@@ -279,14 +299,30 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
     Owner: transactions for any project they're linked to (all owners' entries
     on that project, not just their own -- owners can see each other there).
 
-    No hard delete/update: only create, list, retrieve, and the `cancel` action
-    (which sets status=CANCELLED with a required reason, never removes the row).
+    No hard delete: create, list, retrieve, PATCH (canEditExpense: date, amount, mode, reference, notes only)
+    and the `cancel` action (canDeleteExpense: status=CANCELLED with a required reason, never removes the row).
     """
 
     serializer_class = ExpenseTransactionSerializer
     permission_classes = [RoleAllowed]
     allowed_roles = {Role.OWNER}
-    http_method_names = ['get', 'post', 'head', 'options']
+    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+
+    def _guard_change(self, instance, permission):
+        if not has_permission(self.request.user, permission):
+            raise PermissionDenied('You do not have permission to do this.')
+        if instance.status == TransactionStatus.CANCELLED:
+            raise ValidationError('This expense is already cancelled.')
+        if hasattr(instance, 'manager_labour_distribution'):
+            raise ValidationError('This expense comes from a manager fund distribution. Cancel it from Manager Fund.')
+
+    def partial_update(self, request, *args, **kwargs):
+        instance = self.get_object()
+        self._guard_change(instance, CAN_EDIT_EXPENSE)
+        serializer = ExpenseTransactionEditSerializer(instance, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save(modified_by=request.user)
+        return Response(self.get_serializer(instance).data)
 
     def get_queryset(self):
         user = self.request.user
@@ -333,8 +369,7 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
         reason = request.data.get('remarks') or request.data.get('reason')
         if not reason:
             raise ValidationError({'remarks': 'A reason is required to cancel a transaction.'})
-        if instance.status == TransactionStatus.CANCELLED:
-            raise ValidationError('Transaction is already cancelled.')
+        self._guard_change(instance, CAN_DELETE_EXPENSE)
         instance.cancel(cancelled_by=request.user, reason=reason)
         return Response(self.get_serializer(instance).data)
 

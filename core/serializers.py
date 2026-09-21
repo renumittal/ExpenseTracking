@@ -75,6 +75,27 @@ class ExpenseTransactionSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class ExpenseTransactionEditSerializer(serializers.ModelSerializer):
+    """
+    What may be corrected on a saved expense. Project, category, person, owner and status are fixed: changing
+    them would move money between ledgers, so those need a cancel + a new entry.
+    """
+
+    class Meta:
+        model = ExpenseTransaction
+        fields = ['expense_date', 'amount', 'payment_mode', 'reference_no', 'description', 'remarks',
+                  'payee_name', 'expense_type']
+        extra_kwargs = {'amount': {'min_value': Decimal('0.01')}}
+
+    def validate(self, attrs):
+        if self.instance.expense_category != ExpenseCategory.MISCELLANEOUS:
+            attrs.pop('payee_name', None)
+            attrs.pop('expense_type', None)
+        elif 'payee_name' in attrs and not (attrs['payee_name'] or '').strip():
+            raise serializers.ValidationError({'payee_name': 'Payee name is required.'})
+        return attrs
+
+
 class ManagerFundSerializer(serializers.ModelSerializer):
     """An Owner giving money to a Manager for a project (not an expense)."""
     distributed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)

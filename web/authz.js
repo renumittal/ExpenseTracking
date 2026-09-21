@@ -1,8 +1,8 @@
-/* UI authorization (Phase 1). The single place that knows about roles.
+/* UI authorization. The single place that knows about roles.
    The rest of the app only asks:  can('canAddExpense')  /  Authz.navFor(can).
 
-   This hides things in the UI only. It does NOT protect the API: Phase 2 enforces the same
-   permission names on the server (map each `canXxx` below to a backend permission).
+   This only shows or hides things. The API enforces the same permission names on the server
+   (core/permissions.py), so hiding a button here is never the security.
 
    Roles:  SUPER_ADMIN -> every project (server role ADMIN)
            OWNER / MANAGER / VIEWER -> only the projects they are assigned to */
@@ -82,25 +82,16 @@
     return out;
   }
   const DEFAULT = normalize(null);
-  // Phase 1 storage: this browser only (localStorage). Phase 2 replaces load/save with the server.
-  const STORE_KEY = 'authz.permissionMatrix.v1';
-  function readSaved() { try { return JSON.parse(localStorage.getItem(STORE_KEY)); } catch (e) { return null; } }
-  let current = normalize(readSaved());
-  window.addEventListener('storage', e => { if (e.key === STORE_KEY) current = normalize(readSaved()); });
+  // The matrix is stored on the server (RolePermission) and arrives with /me/, so every device uses the same one.
+  // Until it loads (or if a role has no saved row) the built-in defaults above apply.
+  let current = normalize(null);
 
   const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
   const getMatrix = () => clone(current);
   const defaultMatrix = () => clone(DEFAULT);
   const isDefault = m => same(normalize(m || current), DEFAULT);
-  // Applies immediately (can() reads `current`). Returns false if the browser refused to store it.
-  function saveMatrix(m) {
-    current = normalize(m);
-    try {
-      if (same(current, DEFAULT)) localStorage.removeItem(STORE_KEY); else localStorage.setItem(STORE_KEY, JSON.stringify(current));
-      return true;
-    } catch (e) { return false; }
-  }
-  const resetMatrix = () => saveMatrix(DEFAULT);
+  // Applies what the server holds ({permission: {role: bool}}; anything missing falls back to the default).
+  const setMatrix = m => { current = normalize(m); };
 
   // ---------- which screen needs which permission (array = any of; no entry = any logged-in user) ----------
   const SETTINGS_ANY = ['canManageProjectSettings', 'canManageApplicationSettings', 'canManagePermissions'];
@@ -172,7 +163,7 @@
     const role = SERVER_ROLE[me.role] || null;      // no role -> no access (fail closed)
     // The API already returns only this person's projects (all of them for ADMIN).
     const list = role ? projects.map(p => ({ projectId: p.id, role })) : [];
-    return { id: me.owner_id || me.username, name: me.name, email: me.username, role,
+    return { id: me.user_id || me.owner_id || me.username, name: me.name, email: me.username, role,
       assignedProjects: list, allProjects: role === R.SUPER_ADMIN, demo: false };
   }
 
@@ -204,5 +195,5 @@
   const routePermission = (page, arg) => (page === 'report' ? reportPermission(arg) : ROUTE_PERMISSION[page] || null);
 
   window.Authz = { ROLES: R, ROLE_LIST, ROLE_LABEL, GROUPS, DEFINITIONS, DEMO_USERS, demoUser, buildUser, directory, roleIn, can, navFor,
-    routePermission, allows, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, saveMatrix, resetMatrix, isFixed, isDefault };
+    routePermission, allows, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, setMatrix, isFixed, isDefault };
 })();
