@@ -186,7 +186,7 @@ def effective_permissions(user):
       per_project {project_id: [permission]}  role permission AND the user's membership of that project
     Server-authoritative: the API enforces the same rules; the frontend only uses this to show/hide things.
     """
-    role_level = {key: has_permission(user, key) for key in PERMISSION_DEFAULTS}
+    role_level = {key: has_permission(user, key) for key in PROJECT_RULES}
     if is_admin(user):
         projects = Project.objects.all()
     else:

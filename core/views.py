@@ -308,12 +308,12 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
     allowed_roles = {Role.OWNER}
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
-    def _guard_change(self, instance, permission):
+    def _guard_change(self, instance, permission, allow_distribution=False):
         if not has_permission(self.request.user, permission):
             raise PermissionDenied('You do not have permission to do this.')
         if instance.status == TransactionStatus.CANCELLED:
             raise ValidationError('This expense is already cancelled.')
-        if hasattr(instance, 'manager_labour_distribution'):
+        if not allow_distribution and hasattr(instance, 'manager_labour_distribution'):
             raise ValidationError('This expense comes from a manager fund distribution. Cancel it from Manager Fund.')
 
     def partial_update(self, request, *args, **kwargs):
@@ -369,7 +369,7 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
         reason = request.data.get('remarks') or request.data.get('reason')
         if not reason:
             raise ValidationError({'remarks': 'A reason is required to cancel a transaction.'})
-        self._guard_change(instance, CAN_DELETE_EXPENSE)
+        self._guard_change(instance, CAN_DELETE_EXPENSE, allow_distribution=True)   # cancelling it directly was always allowed
         instance.cancel(cancelled_by=request.user, reason=reason)
         return Response(self.get_serializer(instance).data)
 
