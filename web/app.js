@@ -125,7 +125,7 @@
   async function loadBasics() {
     if (state.me) return;
     const me = await api('me/');
-    const projects = me.owner_id ? await api('projects/') : me.role === 'MANAGER' ? await managerProjects(me) : [];
+    const projects = me.owner_id || me.is_super_admin ? await api('projects/') : me.role === 'MANAGER' ? await managerProjects(me) : [];
     state.me = me;
     state.realProjects = projects.results || projects;
     applyUser();
@@ -305,6 +305,7 @@
       </div>`;
   }
 
+  let projectFlash = '';
   async function screenProject() {
     chrome('project', '#/home');
     loading();
@@ -312,7 +313,9 @@
       const totals = await Promise.all(state.projects.map(p => api(`projects/${p.id}/summary/`).catch(() => null)));
       if (!state.projects.length) { $view.innerHTML = noProject(); return; }
       const many = state.projects.length > 1;
+      const shownFlash = projectFlash; projectFlash = '';
       $view.innerHTML = `<h1>🏗️ ${many ? 'मेरे प्रोजेक्ट' : 'मेरा प्रोजेक्ट'} <small>Projects</small></h1>` +
+        (shownFlash ? `<div class="msg ok" role="status">${esc(shownFlash)}</div>` : '') +
         (can('canCreateProject') ? '<a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>' : '') +
         (many ? '<p class="muted">जिस प्रोजेक्ट में काम करना है उसे छूइए.</p>' : '') +
         (state.projects.map((p, i) => `
@@ -1383,18 +1386,34 @@
 
   function screenNewProject() {
     chrome('project', '#/project');
-    $view.innerHTML = `<h1>➕ नया प्रोजेक्ट <small>New Project</small></h1><div id="npmsg">${NOT_CONNECTED}</div>
+    $view.innerHTML = `<h1>➕ नया प्रोजेक्ट <small>New Project</small></h1><div id="npmsg"></div>
       <form id="npf" novalidate>
         <label for="np-name">प्रोजेक्ट का नाम <small>Name</small> *</label><input id="np-name" type="text" autocomplete="off">
         <label for="np-code">कोड <small>Code</small> *</label><input id="np-code" type="text" autocomplete="off" autocapitalize="characters">
         <label for="np-loc">जगह <small>Location</small></label><input id="np-loc" type="text" autocomplete="off">
         <label for="np-plot">प्लॉट साइज़ <small>Plot size</small></label><input id="np-plot" type="text" autocomplete="off">
         <button class="btn green" type="submit">💾 प्रोजेक्ट बनाएँ <span class="sub">CREATE PROJECT</span></button></form>`;
-    document.getElementById('npf').onsubmit = ev => {
+    let saving = false;
+    document.getElementById('npf').onsubmit = async ev => {
       ev.preventDefault();
+      if (saving) return;
       const out = document.getElementById('npmsg');
-      if (!document.getElementById('np-name').value.trim() || !document.getElementById('np-code').value.trim()) { out.innerHTML = errBox('कृपया नाम और कोड भरें.'); return; }
-      out.innerHTML = NOT_CONNECTED;
+      const val = id => document.getElementById(id).value.trim();
+      if (!val('np-name') || !val('np-code')) { out.innerHTML = errBox('कृपया नाम और कोड भरें.'); return; }
+      saving = true;
+      out.innerHTML = '';
+      try {
+        const p = await api('projects/', { method: 'POST', body: {
+          name: val('np-name'), code: val('np-code').toUpperCase(), location: val('np-loc'), plot_size: val('np-plot') } });
+        state.me = null;                       // reload the project list from the server
+        await loadBasics();
+        state.project = state.projects.find(x => x.id === p.id) || state.project;
+        if (state.project) store.set('projectId', state.project.id);
+        projectFlash = `प्रोजेक्ट बन गया: ${p.name} / Project created.`;
+        location.hash = '#/project';
+      } catch (e) {
+        out.innerHTML = errBox(e.status === 400 && serverMsg(e) ? serverMsg(e) : friendly(e));
+      } finally { saving = false; }
     };
   }
 

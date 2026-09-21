@@ -149,12 +149,17 @@ class ProjectPeopleView(APIView):
 # Owner-facing endpoints
 # ---------------------------------------------------------------------------
 
-class ProjectViewSet(viewsets.ReadOnlyModelViewSet):
-    """Admin: all projects. Owner: only projects they're linked to via ProjectOwner."""
+class ProjectViewSet(mixins.CreateModelMixin, viewsets.ReadOnlyModelViewSet):
+    """Admin: all projects (and the only one who can create). Owner: only projects they're linked to via ProjectOwner."""
 
     serializer_class = ProjectSerializer
     permission_classes = [RoleAllowed]
     allowed_roles = {Role.OWNER}
+
+    def get_permissions(self):
+        if self.action == 'create':
+            return [AdminOnly()]
+        return super().get_permissions()
 
     def get_queryset(self):
         user = self.request.user
