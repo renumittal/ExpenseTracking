@@ -1324,16 +1324,48 @@
     passwordForm('pwf', false, (_, pw) => api(`users/${target.id}/reset-password/`, { method: 'POST', body: { new_password: pw } }));
   }
 
+  let userNote = '';
   async function screenUsers() {
     chrome('users', '#/home');
     loading();
     let list;
     try { list = (await api('users/')).map(asPerson); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
     $view.innerHTML = `<h1>👥 यूज़र <small>Users</small></h1>` +
+      (state.me.is_super_admin ? `<h2>➕ नया यूज़र <small>Create User</small></h2>
+        <div class="card"><div id="cumsg">${userNote}</div>
+          <form id="cuf" novalidate>
+            <label for="cu-name">नाम <small>Name</small></label><input id="cu-name" type="text" autocomplete="off">
+            <label for="cu-user">यूज़र नाम / ईमेल <small>Username or email</small></label><input id="cu-user" type="text" autocomplete="off" autocapitalize="none">
+            <label for="cu-mobile">मोबाइल <small>Mobile</small></label><input id="cu-mobile" type="tel" inputmode="tel" autocomplete="off">
+            <label for="cu-role">भूमिका <small>Role</small></label>
+            <select id="cu-role"><option value="OWNER">OWNER</option><option value="MANAGER" selected>MANAGER</option></select>
+            <label for="cu-pw1">पासवर्ड <small>Password (min 8)</small></label><input id="cu-pw1" type="password" autocomplete="new-password">
+            <label for="cu-pw2">पासवर्ड दोबारा <small>Confirm password</small></label><input id="cu-pw2" type="password" autocomplete="new-password">
+            <div class="muted">प्रोजेक्ट बाद में हर प्रोजेक्ट के सदस्य पेज से जोड़ें. <small>Add projects later from each project's Members screen.</small></div>
+            <button class="btn green" type="submit">➕ यूज़र बनाएँ <span class="sub">CREATE USER</span></button></form></div>` : '') +
       list.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div>
         <div class="muted">${esc(u.email)}</div>
         <div class="muted">${u.allProjects ? 'सारे प्रोजेक्ट <small>All projects</small>' : u.projects.length ? u.projects.map(a => esc(projName(a.project_id)) + ' (' + roleName(WEB_ROLE[a.role]) + ')').join(', ') : 'कोई प्रोजेक्ट नहीं'}</div>
         ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`).join('');
+    const f = document.getElementById('cuf');
+    if (f) f.onsubmit = async ev => {
+      ev.preventDefault();
+      const v = id => document.getElementById(id).value.trim(), out = document.getElementById('cumsg');
+      if (!v('cu-name') || !v('cu-user')) { out.innerHTML = errBox('नाम और यूज़र नाम भरें.'); return; }
+      if (document.getElementById('cu-pw1').value.length < 8) { out.innerHTML = errBox('पासवर्ड कम से कम 8 अक्षर का हो.'); return; }
+      if (document.getElementById('cu-pw1').value !== document.getElementById('cu-pw2').value) { out.innerHTML = errBox('दोनों पासवर्ड एक जैसे नहीं हैं.'); return; }
+      f.querySelector('button[type=submit]').disabled = true;
+      try {
+        await api('users/', { method: 'POST', body: { name: v('cu-name'), username: v('cu-user'), mobile: v('cu-mobile'), role: v('cu-role'),
+          password: document.getElementById('cu-pw1').value, confirm_password: document.getElementById('cu-pw2').value } });
+        userNote = '<div class="msg ok" role="status">✅ यूज़र बन गया. <small>User created.</small></div>';
+        screenUsers();
+      } catch (e) {
+        f.querySelector('button[type=submit]').disabled = false;
+        out.innerHTML = errBox(serverMsg(e) || friendly(e));
+      }
+    };
+    userNote = '';
   }
 
   async function screenMembers() {

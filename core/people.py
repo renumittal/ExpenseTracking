@@ -115,7 +115,11 @@ class ResetPasswordView(APIView):
 # ---------------------------------------------------------------------------
 
 class UserListView(APIView):
-    """GET: every user with their role and project memberships (needs canManageUsers)."""
+    """
+    GET: every user with their role and project memberships (needs canManageUsers).
+    POST (super admin only): create a global account = Django User + Profile role + its Owner/Manager record.
+    It is not tied to any project; projects are assigned afterwards from each project's Members screen.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -133,6 +137,40 @@ class UserListView(APIView):
             'is_active': u.is_active, 'projects': projects.get(u.id, []),
             'can_reset': can_reset_password(request.user, u),
         } for u in users])
+
+
+    @transaction.atomic
+    def post(self, request):
+        if not is_admin(request.user):
+            raise PermissionDenied('Only the super admin can create users.')
+        d = request.data
+        name = (d.get('name') or '').strip()
+        username = (d.get('username') or '').strip()
+        mobile = (d.get('mobile') or '').strip()
+        role = d.get('role')
+        errors = {}
+        if not name:
+            errors['name'] = 'Enter a name.'
+        if not username:
+            errors['username'] = 'Enter a username or email.'
+        elif User.objects.filter(Q(username__iexact=username) | Q(email__iexact=username)).exists():
+            errors['username'] = 'This username or email is already in use.'
+        if role not in (Role.OWNER, Role.MANAGER):
+            errors['role'] = 'Role must be OWNER or MANAGER.'
+        if len(mobile) > 20:
+            errors['mobile'] = 'Mobile number is too long.'
+        if d.get('password') != d.get('confirm_password'):
+            errors['confirm_password'] = 'The two passwords are not the same.'
+        if errors:
+            raise ValidationError(errors)
+        user = User(username=username, first_name=name[:150], email=username if '@' in username else '')
+        _check_new_password(d.get('password'), user)
+        user.set_password(d.get('password'))
+        user.save()
+        Profile.objects.create(user=user, role=role)
+        model = Owner if role == Role.OWNER else Manager
+        model.objects.create(user=user, name=name, mobile=mobile)
+        return Response({'id': user.id}, status=status.HTTP_201_CREATED)
 
 
 # ---------------------------------------------------------------------------
