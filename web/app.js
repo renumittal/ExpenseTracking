@@ -63,6 +63,9 @@
     return !!me.permissions[perm];
   };
   const can = perm => Authz.can(state.user, state.project && state.project.id, perm) && (!SERVER_PERMS.includes(perm) || serverAllows(perm));
+  // Permissions only the server decides (not in the local matrix, so localStorage can never grant them).
+  // A server that does not send permissions -> hidden.
+  const serverOnly = perm => !!(state.me && state.me.permissions) && serverAllows(perm);
   const canAny = perms => Authz.allows(perms, can);               // a screen may need one permission, any of several, or a rule
   const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
   const noProject = () => can('canCreateProject')
@@ -978,6 +981,50 @@
       <a class="btn line" href="#/home">🏠 होम पर जाएँ <span class="sub">Home</span></a>`;
   }
 
+  // ----- Supplier bills: a separate action on an expense that is already saved (never part of Save Expense) -----
+  const BILL_EXT = ['jpg', 'jpeg', 'png', 'pdf'], BILL_MAX = 5 * 1024 * 1024;   // the server enforces the same rules
+  const billMsgs = {                                                             // shown under a card after an action
+    403: 'आपको इसकी अनुमति नहीं है. (You do not have permission.)',
+    404: 'बिल नहीं मिला. (Bill not found.)',
+    409: 'इस खर्च पर बिल पहले से लगा है. (This expense already has a bill.)',
+    502: 'बिल सेव नहीं हो सका। कृपया दोबारा कोशिश करें. (Could not store the bill. Try again.)',
+    503: 'बिल स्टोरेज अभी चालू नहीं है। कृपया एडमिन से संपर्क करें. (Bill storage is not set up yet.)',
+  };
+  const billErr = e => (e && e.kind === 'network' ? MSG.network : e && e.status === 400 && serverMsg(e) ? serverMsg(e) : billMsgs[e && e.status] || MSG.problem);
+  function billFileProblem(file) {
+    if (!BILL_EXT.includes((file.name.split('.').pop() || '').toLowerCase())) return 'सिर्फ़ JPG, PNG या PDF फ़ाइल चुनिए. (Only JPG, PNG or PDF.)';
+    if (!file.size) return 'फ़ाइल खाली है. (The file is empty.)';
+    if (file.size > BILL_MAX) return 'फ़ाइल 5 MB से बड़ी है. (The file is larger than 5 MB.)';
+    return '';
+  }
+  // The shared api() sends JSON; a file needs multipart, so this is its own small call (same auth and error handling).
+  async function uploadBill(id, file) {
+    const fd = new FormData();
+    fd.append('file', file, file.name);
+    let res;
+    try {
+      res = await fetch(API + `expense-transactions/${id}/bill/`, { method: 'POST', headers: { Accept: 'application/json', Authorization: 'Token ' + state.token }, body: fd });
+    } catch (e) { console.error('network error', e); throw new AppError('network'); }
+    let data = null;
+    try { data = await res.json(); } catch (e) { /* empty body is fine */ }
+    if (res.status === 401) { logoutLocal(); location.hash = '#/login'; throw new AppError('auth', 401); }
+    if (!res.ok) { console.error('server error', 'bill upload', res.status, data); throw new AppError('server', res.status, data); }
+    return data;
+  }
+  // The signed link is short-lived and never stored. The tab is opened inside the tap so the browser allows it.
+  async function openBill(id, box) {
+    const tab = window.open('', '_blank');
+    if (tab) { try { tab.opener = null; tab.document.write('<p style="font:20px sans-serif;padding:24px">⏳ बिल खुल रहा है...</p>'); } catch (e) { /* ignore */ } }
+    try {
+      const r = await api(`expense-transactions/${id}/bill/`);
+      if (tab) tab.location.href = r.url;
+      else box.innerHTML = `<a class="btn line" href="${esc(r.url)}" target="_blank" rel="noopener">📄 बिल खोलें <span class="sub">Open bill</span></a>`;
+    } catch (e) {
+      if (tab) tab.close();
+      box.innerHTML = errBox(billErr(e));
+    }
+  }
+
   // ----- Expenses list -----
   let listState = { cat: '', shown: 20 };
 
@@ -1005,6 +1052,20 @@
       return r.payee_name;
     };
 
+    // Upload / View Bill: supplier expenses only, and only what the SERVER allows (from /me/).
+    const billNote = {};                              // id -> message shown under that card
+    const billActions = r => {
+      if (r.expense_category !== 'SUPPLIER') return '';
+      let btn = '';
+      if (r.has_bill) {
+        if (serverOnly('canViewBill')) btn = `<button type="button" class="btn line bill-view" data-id="${r.id}">👁 View Bill <span class="sub">${esc(r.bill_filename || '')}</span></button>`;
+      } else if (r.status === 'ACTIVE' && serverOnly('canUploadBill')) {
+        btn = `<button type="button" class="btn line bill-up" data-id="${r.id}">📎 Upload Bill <span class="sub">JPG · PNG · PDF</span></button>
+          <input type="file" class="bill-file" data-id="${r.id}" accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf" hidden>`;
+      }
+      return btn || billNote[r.id] ? `<div class="row-actions bill-actions">${btn}</div><div class="bill-msg" data-id="${r.id}">${billNote[r.id] || ''}</div>` : '';
+    };
+
     function draw() {
       const shown = rows.filter(r => !listState.cat || r.expense_category === listState.cat);
       const total = shown.reduce((s, r) => s + Number(r.amount), 0);
@@ -1019,6 +1080,7 @@
             <div class="meta">${CAT[r.expense_category].icon} ${CAT[r.expense_category].hi}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
             ${r.expense_category === 'SUPPLIER' && r.description ? `<div class="note">🧱 ${esc(r.description)}</div>` : ''}
             ${r.remarks ? `<div class="note">📝 ${esc(r.remarks)}</div>` : ''}
+            ${billActions(r)}
             ${can('canEditExpense') || can('canDeleteExpense') ? `<div class="row-actions">${can('canEditExpense') ? '<button type="button" class="btn line act">✏️ Edit</button>' : ''}${can('canDeleteExpense') ? '<button type="button" class="btn line danger act">🗑 Delete</button>' : ''}</div>` : ''}
           </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>अभी कोई खर्च नहीं है.</p>${canAdd() ? '<a class="btn green" href="#/add">➕ खर्च डालें <span class="sub">Add Expense</span></a>' : ''}</div>`) +
         (shown.length > listState.shown ? '<button type="button" class="btn line" id="more">⬇ और दिखाएँ <span class="sub">Show more</span></button>' : '');
@@ -1026,6 +1088,27 @@
         b.closest('.card').insertAdjacentHTML('beforeend', NOT_CONNECTED);   // no edit/delete API yet (Phase 2)
         b.closest('.row-actions').remove();
       });
+      const boxOf = id => $view.querySelector(`.bill-msg[data-id="${id}"]`);
+      $view.querySelectorAll('.bill-up').forEach(b => b.onclick = () => b.nextElementSibling.click());     // opens the file picker / camera
+      $view.querySelectorAll('.bill-file').forEach(input => input.onchange = async () => {
+        const id = Number(input.dataset.id), file = input.files[0], row = rows.find(x => x.id === id), box = boxOf(id);
+        input.value = '';
+        if (!file || !row) return;
+        const bad = billFileProblem(file);
+        if (bad) { box.innerHTML = errBox(bad); return; }
+        const btn = input.previousElementSibling;
+        btn.disabled = true; box.innerHTML = '<div class="msg info">⏳ बिल अपलोड हो रहा है... <small>Uploading</small></div>';
+        try {
+          const saved = await uploadBill(id, file);
+          row.has_bill = true; row.bill_filename = saved.bill_filename;
+          billNote[id] = '<div class="msg ok" role="status">✅ बिल लग गया. (Bill uploaded.)</div>';
+        } catch (e) {
+          if (e.status === 409) { row.has_bill = true; billNote[id] = errBox(billErr(e)); }     // someone attached one meanwhile
+          else { btn.disabled = false; box.innerHTML = errBox(billErr(e)); return; }
+        }
+        draw();
+      });
+      $view.querySelectorAll('.bill-view').forEach(b => b.onclick = () => openBill(Number(b.dataset.id), boxOf(b.dataset.id)));
       $view.querySelectorAll('[data-c]').forEach(b => b.onclick = () => { listState.cat = b.dataset.c; listState.shown = 20; draw(); });
       const more = document.getElementById('more');
       if (more) more.onclick = () => { listState.shown += 20; draw(); };
@@ -1316,7 +1399,7 @@
   }
 
   // ----- Manager Fund: Owner --fund--> Manager --distribution--> Labour. All numbers come from the server. -----
-  let fundFlash = '', fundManager = null;                       // fundManager = the manager whose position is shown
+  let fundFlash = '', fundManager = null, fundAll = false;      // fundManager = the manager shown; fundAll = the all-projects overview
   // Money as whole paise (integers), so an amount never picks up floating-point errors.
   const toPaise = t => {
     const m = /^(\d*)(?:\.(\d{0,2}))?$/.exec(String(t || '').trim());
@@ -1332,21 +1415,47 @@
     if (state.fundForbidden) { $view.innerHTML = fundNoAccess; return; }
     if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
-    let stmts;
-    try { stmts = (await api(`manager-funds/statement/?project=${state.project.id}`)).statements; }
+    let every;
+    try { every = (await api('manager-funds/statement/')).statements; }      // the server returns only what this user may see
     catch (e) { $view.innerHTML = e.status === 403 ? fundNoAccess : errBox(fundErr(e)); return; }
+    const stmts = every.filter(x => x.position.project_id === state.project.id);
     const flash = fundFlash; fundFlash = '';
+    const canAll = state.projects.length > 1 && !state.me.manager_id;          // owners / admin: an all-projects overview
+    if (!canAll) fundAll = false;
     const projectPicker = state.projects.length > 1
-      ? `<select id="fproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+      ? `<select id="fproj" aria-label="Project">${canAll ? `<option value="all" ${fundAll ? 'selected' : ''}>सभी प्रोजेक्ट / All projects</option>` : ''}${state.projects.map(p => `<option value="${p.id}" ${!fundAll && p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+    // Manager | Fund Received | Distributed to Labour | Available Balance, one row per manager (+ a project total).
+    const fundTable = list => {
+      const sum = k => list.reduce((t, x) => t + Number(x.position[k]), 0);
+      const cells = (name, r, d, b) => `<span class="c-name">${name}</span><span data-label="Fund Received">${money(r)}</span><span data-label="Distributed to Labour">${money(d)}</span><span data-label="Available Balance"><b>${money(b)}</b></span>`;
+      return `<div class="fund-table" role="table"><div class="fund-row head" role="row"><span>Manager <small>मैनेजर</small></span><span>Fund Received <small>फंड मिला</small></span><span>Distributed to Labour <small>मज़दूरों को बाँटा</small></span><span>Available Balance <small>बचा हुआ</small></span></div>
+        ${list.map(x => `<button type="button" class="fund-row pick ${!fundAll && x.position.project_id === state.project.id && x.position.manager_id === fundManager ? 'on' : ''}" data-p="${x.position.project_id}" data-m="${x.position.manager_id}">${cells(esc(x.position.manager_name), x.position.total_received, x.position.total_distributed, x.position.available_balance)}</button>`).join('')}
+        ${list.length > 1 ? `<div class="fund-row total">${cells('Project total <small>कुल</small>', sum('total_received'), sum('total_distributed'), sum('available_balance'))}</div>` : ''}</div>`;
+    };
+    const bindPick = () => $view.querySelectorAll('.fund-row.pick').forEach(b => b.onclick = () => {
+      state.project = state.projects.find(p => p.id === Number(b.dataset.p)); store.set('projectId', state.project.id); state.names = null;
+      fundAll = false; fundManager = Number(b.dataset.m); screenFund(); window.scrollTo(0, 0);
+    });
     const actions = `${can('canGiveManagerFund') ? '<a class="btn green" href="#/givefund">➕ फंड दें <span class="sub">Give Fund</span></a>' : ''}
       ${can('canDistributeManagerFund') && stmts.length ? '<a class="btn" href="#/distribute">📤 मज़दूरों को दें <span class="sub">Distribute to Labour</span></a>' : ''}`;
     const head = `<h1>💰 मैनेजर फंड <small>Manager Fund</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>${projectPicker}
+      <p class="muted">प्रोजेक्ट: <b>${fundAll ? 'सभी प्रोजेक्ट / All projects' : esc(state.project.name)}</b></p>${projectPicker}
       ${flash ? `<div class="msg ok" role="status">${esc(flash)}</div>` : ''}`;
     const bindProject = () => {
       const sel = document.getElementById('fproj');
-      if (sel) sel.onchange = () => { state.project = state.projects.find(p => p.id === Number(sel.value)); store.set('projectId', state.project.id); state.names = null; fundManager = null; screenFund(); };
+      if (sel) sel.onchange = () => {
+        fundAll = sel.value === 'all';
+        if (!fundAll) { state.project = state.projects.find(p => p.id === Number(sel.value)); store.set('projectId', state.project.id); state.names = null; }
+        fundManager = null; screenFund();
+      };
     };
+    if (fundAll) {                                    // every project the user may see, manager-wise
+      const parts = state.projects.map(p => ({ p, list: every.filter(x => x.position.project_id === p.id) })).filter(x => x.list.length);
+      $view.innerHTML = `${head}` + (parts.map(x => `<h2>🏗️ ${esc(x.p.name)}</h2>${fundTable(x.list)}`).join('')
+        || '<div class="empty"><div class="ico">📭</div><p>अभी किसी प्रोजेक्ट में कोई फंड नहीं दिया गया है.<br><small>No fund has been given on any project yet.</small></p></div>');
+      bindProject(); bindPick();
+      return;
+    }
     if (!stmts.length) {
       $view.innerHTML = `${head}<div class="empty"><div class="ico">📭</div><p>इस प्रोजेक्ट में अभी किसी मैनेजर को फंड नहीं मिला है.<br><small>No fund has been given to a manager on this project yet.</small></p></div>${actions}`;
       bindProject();
@@ -1360,10 +1469,7 @@
     const draw = () => {
       const p = cur.position, bal = Number(p.available_balance);
       $view.innerHTML = `${head}
-        ${stmts.length > 1 ? `<h2>मैनेजर <small>Manager Summary</small></h2>` + stmts.map(x => `
-          <button type="button" class="card pick ${x.position.manager_id === fundManager ? 'on' : ''}" data-m="${x.position.manager_id}">
-            <div class="row"><b>${esc(x.position.manager_name)}</b><span class="amount">${money(x.position.available_balance)}</span></div>
-            <div class="muted">मिला ${money(x.position.total_received)} · बाँटा ${money(x.position.total_distributed)} · बचा ${money(x.position.available_balance)}</div></button>`).join('') : ''}
+        ${!state.me.manager_id ? `<h2>मैनेजर <small>Manager-wise Summary</small></h2>${fundTable(stmts)}` : ''}
         <p class="muted">मैनेजर: <b>${esc(p.manager_name)}</b></p>
         <div class="tot-grid">
           <div class="card tot-box"><div class="muted">कुल फंड मिला <small>Total Fund Received</small></div><div class="big-total">${money(p.total_received)}</div><div class="muted">मालिक → मैनेजर <small>Owner → Manager</small></div></div>
@@ -1385,8 +1491,7 @@
         (cur.ledger.map(e => `<div class="card item ${e.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${e.kind === 'FUND' ? '📥' : '📤'} ${esc(e.label)}</span>
           <span class="amount ${e.kind === 'FUND' ? 'in' : 'out'}">${e.kind === 'FUND' ? '+' : '−'} ${money(e.amount)}</span></div>
           <div class="row meta"><span>${shortDate(e.date)} ${e.status === 'ACTIVE' ? '' : pill(e.status)}</span><span>बचा: <b>${money(e.running_balance)}</b></span></div></div>`).join('') || '<div class="empty">अभी कुछ नहीं.</div>');
-      bindProject();
-      $view.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { fundManager = Number(b.dataset.m); cur = stmts.find(x => x.position.manager_id === fundManager); draw(); window.scrollTo(0, 0); });
+      bindProject(); bindPick();
     };
     draw();
   }

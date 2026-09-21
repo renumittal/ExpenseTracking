@@ -170,6 +170,21 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); outline: 
 .item.cancelled .amount, .item.cancelled .who { text-decoration: line-through; opacity: .65; }
 @media (min-width: 720px) { .tot-grid { grid-template-columns: repeat(3, 1fr); } .tot-box .big-total { font-size: 1.6rem; } }
 
+/* Manager-wise fund table (desktop: columns; phone: each row becomes a labelled card) */
+.fund-table { margin: 8px 0; overflow: hidden; background: var(--card); border: 2px solid var(--line); border-radius: var(--radius); }
+.fund-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; gap: 6px; align-items: center; width: 100%; padding: 10px 12px; font: inherit; font-size: .9rem; text-align: left; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--line); }
+.fund-row.head { font-weight: 800; color: var(--blue); background: var(--blue-soft); }
+.fund-row.pick { cursor: pointer; }
+.fund-row.pick.on { background: #eef8f1; }
+.fund-row.total { font-weight: 800; background: var(--bg); border-bottom: 0; }
+.fund-row .c-name { font-weight: 700; }
+@media (max-width: 719px) {
+  .fund-row { grid-template-columns: 1fr 1fr 1fr; }
+  .fund-row.head { display: none; }
+  .fund-row .c-name { grid-column: 1 / -1; font-size: 1.05rem; }
+  .fund-row [data-label]::before { content: attr(data-label); display: block; font-size: .72rem; font-weight: 600; color: var(--muted); }
+}
+
 /* Success */
 .success { text-align: center; padding-top: 24px; }
 .success .tick { font-size: 5rem; }
