@@ -1393,13 +1393,11 @@
             ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`;
         }).join('') || '<div class="empty">अभी कोई और सदस्य नहीं है.</div>') +
         `<h2>➕ सदस्य जोड़ें <small>Add Member</small></h2>
-        <form id="addm" novalidate><label for="m-search">मौजूदा यूज़र खोजें <small>Search existing user (name, username or email)</small></label>
-          <input id="m-search" type="search" autocomplete="off" autocapitalize="none" placeholder="Search…">
-          <div id="m-list" role="listbox" aria-label="Existing users"></div>
-          <div id="m-picked" class="muted"></div>
+        <form id="addm" novalidate><label for="m-user">यूज़र चुनें <small>Select existing user</small></label>
+          <select id="m-user"><option value="">— चुनें / Select —</option>${candidates.map(u => `<option value="${u.id}">${esc(u.name)} · ${esc(u.username)} · ${esc(roleName(WEB_ROLE[u.role]))}</option>`).join('')}</select>
           <label for="m-role">भूमिका <small>Role (from the user's account)</small></label>
           <select id="m-role" disabled><option value="OWNER">OWNER</option><option value="MANAGER">MANAGER</option></select>
-          <button class="btn green" type="submit" id="m-add" disabled>➕ जोड़ें <span class="sub">ADD MEMBER</span></button></form>`;
+          <button class="btn green" type="submit" id="m-add">➕ जोड़ें <span class="sub">ADD MEMBER</span></button></form>`;
       const mm = document.getElementById('mmsg');
       const run = async (path, method, body, ok) => {
         try { await api(path, { method, body }); note = `<div class="msg ok" role="status">${ok}</div>`; }
@@ -1414,26 +1412,12 @@
         if (confirm(`${sel.dataset.name} की भूमिका ${sel.value} करें?`)) run(`${url}${sel.dataset.id}/`, 'PATCH', { role: sel.value }, '✅ भूमिका बदल गई. Role changed.');
         else draw();
       });
-      // Only an existing user chosen from the server's list can be added (typed text is just a search).
-      let picked = null;
-      const search = document.getElementById('m-search'), listBox = document.getElementById('m-list');
-      const showList = () => {
-        const q = search.value.trim().toLowerCase();
-        const hits = candidates.filter(u => !q || [u.name, u.username, u.email].some(t => (t || '').toLowerCase().includes(q)));
-        listBox.innerHTML = hits.slice(0, 30).map(u => `<button type="button" class="btn line m-pick" role="option" data-id="${u.id}" aria-selected="${picked && picked.id === u.id}" style="min-height:52px;font-size:1rem;text-align:left"><b>${esc(u.name)}</b> · ${esc(roleName(WEB_ROLE[u.role]))}<div class="muted">${esc(u.username)}${u.email && u.email !== u.username ? ' · ' + esc(u.email) : ''}</div></button>`).join('')
-          || `<div class="muted">${candidates.length ? 'कोई यूज़र नहीं मिला. No match.' : 'जोड़ने के लिए कोई और यूज़र नहीं है. No other users available.'}</div>`;
-        listBox.querySelectorAll('.m-pick').forEach(b => b.onclick = () => {
-          picked = candidates.find(u => u.id === Number(b.dataset.id));
-          document.getElementById('m-picked').innerHTML = `चुना: <b>${esc(picked.name)}</b> (${esc(picked.username)})`;
-          if (picked.role) document.getElementById('m-role').value = picked.role;
-          document.getElementById('m-add').disabled = false;
-          showList();
-        });
-      };
-      search.oninput = showList;
-      showList();
+      // Only an existing user chosen from the server's list can be added.
+      const sel = document.getElementById('m-user');
+      sel.onchange = () => { const u = candidates.find(x => x.id === Number(sel.value)); if (u && u.role) document.getElementById('m-role').value = u.role; };
       document.getElementById('addm').onsubmit = ev => {
         ev.preventDefault();
+        const picked = candidates.find(x => x.id === Number(sel.value));
         if (!picked) { mm.innerHTML = errBox('कृपया सूची से यूज़र चुनें.'); return; }
         run(url, 'POST', { username: picked.username, role: picked.role || document.getElementById('m-role').value }, '✅ सदस्य जुड़ गया. Member added.');
       };
