@@ -124,6 +124,8 @@ class UserListView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        if request.query_params.get('project'):
+            return self._candidates(request)
         if not has_permission(request.user, CAN_MANAGE_USERS):
             raise PermissionDenied('You cannot manage users.')
         users = list(User.objects.select_related('profile', 'owner_profile', 'manager_profile').order_by('username'))
@@ -138,6 +140,20 @@ class UserListView(APIView):
             'can_reset': can_reset_password(request.user, u),
         } for u in users])
 
+
+    def _candidates(self, request):
+        """?project=<id>: existing users who could be added to that project (for its Add Member picker)."""
+        try:
+            project = _members_project(request, int(request.query_params['project']))
+        except ValueError:
+            raise NotFound('Project not found.')
+        taken = set(ProjectOwner.objects.filter(project=project).values_list('owner__user_id', flat=True))
+        taken |= set(ProjectManager.objects.filter(project=project).values_list('manager__user_id', flat=True))
+        users = (User.objects.filter(is_active=True, is_superuser=False)
+                 .exclude(profile__role=Role.ADMIN).exclude(id__in=taken)
+                 .select_related('profile', 'owner_profile', 'manager_profile').order_by('username'))
+        return Response([{'id': u.id, 'username': u.username, 'email': u.email, 'name': _display_name(u),
+                          'role': get_role(u)} for u in users])
 
     @transaction.atomic
     def post(self, request):
