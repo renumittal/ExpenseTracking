@@ -165,19 +165,48 @@
     state.names = null;
   }
 
-  // ---------- profile bar ----------
+  // ---------- profile bar: name/role + a top-right user menu (language, password, logout) ----------
   function renderUserbar(show) {
     const bar = document.getElementById('userbar');
     bar.hidden = !(show && state.user);
     if (bar.hidden) return;
     const role = (state.project && Authz.roleIn(state.user, state.project.id)) || state.user.role;
+    const lang = I18n.getLang();
     bar.innerHTML = `
       <div class="who"><b>${esc(state.user.name)}</b><span class="role">${role ? esc(Authz.ROLE_LABEL[role]) : 'NO ROLE'}</span></div>
-      ${can('canChangeOwnPassword') ? '<a class="out" href="#/profile">🔑 Change Password</a>' : ''}
-      <button type="button" class="out" id="logoutBtn">🚪 Logout</button>
-      ${DEMO ? `<label class="demo">Test as
-        <select id="demoSel" aria-label="Test user"><option value="">Real login</option>${Authz.DEMO_USERS.map(u => `<option value="${u.id}" ${u.id === state.demoId ? 'selected' : ''}>${esc(u.email)}</option>`).join('')}</select></label>` : ''}`;
+      ${DEMO ? `<label class="demo">${esc(I18n.t('testAs'))}
+        <select id="demoSel" aria-label="Test user"><option value="">${esc(I18n.t('realLogin'))}</option>${Authz.DEMO_USERS.map(u => `<option value="${u.id}" ${u.id === state.demoId ? 'selected' : ''}>${esc(u.email)}</option>`).join('')}</select></label>` : ''}
+      <div class="user-menu">
+        <button type="button" class="user-chip" id="userMenuBtn" aria-haspopup="true" aria-expanded="false" aria-label="${esc(I18n.t('account'))}: ${esc(state.user.name)}">
+          <span class="avatar">${esc(initials(state.user.name))}</span>
+        </button>
+        <div class="user-menu-panel" id="userMenuPanel" hidden role="menu">
+          <div class="user-menu-section">
+            <span class="user-menu-label">${esc(I18n.t('language'))}</span>
+            ${I18n.LANGS.map(l => `<button type="button" class="user-menu-lang" role="menuitemradio" aria-checked="${l.code === lang}" data-lang="${l.code}">${l.code === lang ? '✓ ' : ''}${esc(l.label)}</button>`).join('')}
+          </div>
+          <div class="user-menu-divider"></div>
+          ${can('canChangeOwnPassword') ? `<a class="user-menu-item" role="menuitem" href="#/profile">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}
+          <button type="button" class="user-menu-item" role="menuitem" id="logoutBtn">🚪 ${esc(I18n.t('logout'))}</button>
+        </div>
+      </div>`;
+
+    const btn = document.getElementById('userMenuBtn'), panel = document.getElementById('userMenuPanel');
+    const closeMenu = () => { panel.hidden = true; btn.setAttribute('aria-expanded', 'false'); };
+    btn.onclick = () => {
+      const opening = panel.hidden;
+      panel.hidden = !opening;
+      btn.setAttribute('aria-expanded', String(opening));
+    };
+    document.addEventListener('click', e => { if (!panel.hidden && !e.target.closest('.user-menu')) closeMenu(); });
+    window.addEventListener('hashchange', closeMenu);
+    panel.querySelectorAll('.user-menu-lang').forEach(b => b.onclick = () => {
+      I18n.setLang(b.dataset.lang);
+      closeMenu();
+      route();   // re-render the current screen (and chrome) in the new language
+    });
     document.getElementById('logoutBtn').onclick = doLogout;
+
     const sel = document.getElementById('demoSel');
     if (sel) sel.onchange = () => {
       state.demoId = sel.value || null;
@@ -205,16 +234,17 @@
     const warn = document.getElementById('permWarning');
     const showWarning = loggedIn && state.user && !state.user.demo && Authz.matrixState() === 'error';
     warn.hidden = !showWarning;
-    if (showWarning) warn.textContent = 'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें. '
-      + '(Permissions could not be loaded -- some buttons may be hidden. Please reload the page.)';
+    if (showWarning) warn.textContent = I18n.getLang() === 'hi'
+      ? 'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें.'
+      : 'Permissions could not be loaded -- some buttons may be hidden. Please reload the page.';
     const nav = document.getElementById('tabs');
     const items = loggedIn && state.user ? Authz.navFor(can) : [];
     const more = items.filter(n => !n.primary);
-    nav.innerHTML = items.filter(n => n.primary).map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${n.hi}</a>`).join('')
-      + (more.length ? `<button type="button" id="menuBtn" data-tab="menu" aria-expanded="false"><span>☰</span>मेन्यू</button>` : '');
+    nav.innerHTML = items.filter(n => n.primary).map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('')
+      + (more.length ? `<button type="button" id="menuBtn" data-tab="menu" aria-expanded="false"><span>☰</span>${I18n.t('menu')}</button>` : '');
     const sheet = document.getElementById('menuSheet');
     sheet.hidden = true;
-    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${n.hi} <small>${n.en}</small></a>`).join('');
+    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)} <small>${I18n.secondary(n)}</small></a>`).join('');
     const menuBtn = document.getElementById('menuBtn');
     if (menuBtn) {
       menuBtn.onclick = () => { sheet.hidden = !sheet.hidden; menuBtn.setAttribute('aria-expanded', String(!sheet.hidden)); };

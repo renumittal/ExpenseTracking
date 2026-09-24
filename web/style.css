@@ -60,6 +60,38 @@ small { font-size: .78em; font-weight: 400; opacity: .85; }
 .userbar .demo { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; font-size: .85rem; color: var(--muted); }
 .userbar .demo select { min-height: 44px; font-size: 1rem; padding: 4px 10px; border-width: 2px; }
 
+/* Top-right user menu: language switch, change password, logout */
+.user-menu { position: relative; flex: 0 0 auto; margin-left: auto; }
+.user-chip {
+  display: flex; align-items: center; justify-content: center; width: 44px; height: 44px;
+  padding: 0; border: 2px solid var(--blue); border-radius: 50%; background: var(--blue-soft);
+  cursor: pointer;
+}
+.user-chip .avatar { font-weight: 800; color: var(--blue); font-size: .95rem; }
+.user-menu-panel {
+  position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; min-width: 220px;
+  background: var(--card); border: 2px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 8px; display: flex; flex-direction: column; gap: 2px;
+}
+.user-menu-section { padding: 6px 10px 4px; }
+.user-menu-label { display: block; font-size: .8rem; font-weight: 800; color: var(--muted); margin-bottom: 6px; }
+.user-menu-lang {
+  display: block; width: 100%; text-align: left; font: inherit; font-size: .95rem; font-weight: 700;
+  min-height: 40px; padding: 6px 8px; margin: 2px 0; background: none; border: 0; border-radius: 8px;
+  color: inherit; cursor: pointer;
+}
+.user-menu-lang[aria-checked=true] { background: var(--blue-soft); color: var(--blue); }
+.user-menu-divider { height: 1px; background: var(--line); margin: 4px 0; }
+.user-menu-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 44px; padding: 8px 10px;
+  font: inherit; font-size: .95rem; font-weight: 700; text-align: left; text-decoration: none;
+  color: inherit; background: none; border: 0; border-radius: 8px; cursor: pointer;
+}
+.user-menu-item:hover, .user-menu-lang:hover { background: var(--bg); }
+@media (max-width: 359px) {
+  .user-menu-panel { position: fixed; left: 12px; right: 12px; top: auto; min-width: 0; }
+}
+
 /* Buttons */
 .btn {
   display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%;

@@ -3,7 +3,7 @@
   "name": "Expense Tracking",
   "short_name": "Expense",
   "description": "Simple expense diary for your construction project",
-  "lang": "hi",
+  "lang": "en",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
