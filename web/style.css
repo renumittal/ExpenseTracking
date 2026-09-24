@@ -71,8 +71,13 @@ small { font-size: .78em; font-weight: 400; opacity: .85; }
 .user-menu-panel {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 20; min-width: 220px;
   background: var(--card); border: 2px solid var(--line); border-radius: var(--radius);
-  box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 8px; display: flex; flex-direction: column; gap: 2px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.18); padding: 8px; flex-direction: column; gap: 2px;
 }
+/* `display: flex` above must not apply while [hidden] -- at equal specificity, an author rule
+   overrides the browser's own `[hidden] { display: none }` default, so scope it explicitly instead
+   of setting `display` unconditionally (that was the actual bug: clicking the avatar to close the
+   menu set the `hidden` property correctly, but this rule kept showing it anyway). */
+.user-menu-panel:not([hidden]) { display: flex; }
 .user-menu-section { padding: 6px 10px 4px; }
 .user-menu-label { display: block; font-size: .8rem; font-weight: 800; color: var(--muted); margin-bottom: 6px; }
 .user-menu-lang {

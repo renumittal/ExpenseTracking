@@ -52,6 +52,9 @@
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
 
   const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser'), fundForbidden: false };
+  // Closes the top-right user menu, if open; set by renderUserbar() on each render and invoked by
+  // the one shared document/hashchange listener below (registered once, not per-render).
+  let userMenuCloser = null;
   const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
   // The one permission check used everywhere: can('canAddExpense'). Role names live only in authz.js.
   // The server decides these (it returns them in /me/); the local matrix can only hide more, never grant more.
@@ -169,7 +172,7 @@
   function renderUserbar(show) {
     const bar = document.getElementById('userbar');
     bar.hidden = !(show && state.user);
-    if (bar.hidden) return;
+    if (bar.hidden) { userMenuCloser = null; return; }
     const role = (state.project && Authz.roleIn(state.user, state.project.id)) || state.user.role;
     const lang = I18n.getLang();
     bar.innerHTML = `
@@ -198,8 +201,10 @@
       panel.hidden = !opening;
       btn.setAttribute('aria-expanded', String(opening));
     };
-    document.addEventListener('click', e => { if (!panel.hidden && !e.target.closest('.user-menu')) closeMenu(); });
-    window.addEventListener('hashchange', closeMenu);
+    // One shared listener handles every render (see closeUserMenuOnOutsideClick below) --
+    // renderUserbar runs on every screen change, so adding a fresh document/window listener here
+    // each time would stack forever instead of replacing the previous one.
+    userMenuCloser = closeMenu;
     panel.querySelectorAll('.user-menu-lang').forEach(b => b.onclick = () => {
       I18n.setLang(b.dataset.lang);
       closeMenu();
@@ -2259,7 +2264,9 @@
   document.addEventListener('click', e => {
     const sheet = document.getElementById('menuSheet');
     if (!sheet.hidden && !e.target.closest('#menuSheet, #menuBtn')) sheet.hidden = true;
+    if (userMenuCloser && !e.target.closest('.user-menu')) userMenuCloser();
   });
+  window.addEventListener('hashchange', () => { if (userMenuCloser) userMenuCloser(); });
   window.addEventListener('hashchange', route);
   route();
 })();
