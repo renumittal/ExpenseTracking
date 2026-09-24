@@ -14,7 +14,7 @@ ExpenseTransaction that distribution auto-creates.
 
 import csv
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.http import HttpResponse
 from rest_framework import generics, pagination
 from rest_framework.exceptions import NotFound
@@ -31,7 +31,8 @@ from .models import (
     TransactionStatus,
     ZERO,
 )
-from .permissions import RoleAllowed, is_admin, is_manager
+from .access import services
+from .permissions import RoleAllowed, is_admin
 from .serializers import ExpenseTransactionSerializer
 
 
@@ -43,7 +44,7 @@ def scoped_projects(user):
     """All projects for admin; only linked projects for an owner."""
     if is_admin(user):
         return Project.objects.all()
-    return Project.objects.filter(project_owners__owner__user=user).distinct()
+    return services.projects_with_role(user, 'OWNER')
 
 
 def scoped_transactions(user):
@@ -298,10 +299,13 @@ class ManagerFundReportView(APIView):
 
     def get(self, request):
         user = request.user
-        if is_manager(user) and not is_admin(user):
-            funds = ManagerFund.objects.filter(manager__user=user)
+        if is_admin(user):
+            funds = ManagerFund.objects.all()
         else:
-            funds = ManagerFund.objects.filter(project__in=scoped_projects(user))
+            # Rows on any project this user holds an OWNER-role grant on, plus their own rows
+            # anywhere as a manager (a person can hold both, on different projects).
+            owned = services.projects_with_role(user, 'OWNER')
+            funds = ManagerFund.objects.filter(Q(project__in=owned) | Q(manager__user=user))
 
         if request.query_params.get('project'):
             funds = funds.filter(project_id=request.query_params['project'])

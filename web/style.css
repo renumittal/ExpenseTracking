@@ -262,6 +262,67 @@ body.typing main { padding-bottom: 24px; }
 .menu-sheet a.on { color: var(--blue); background: var(--blue-soft); border-color: var(--blue); }
 @media (min-width: 720px) { .menu-sheet { grid-template-columns: 1fr 1fr 1fr; } }
 
+/* ---------------- Settings -> Access Control ---------------- */
+.ac-cards { display: grid; gap: 12px; }
+.ac-card {
+  display: flex; align-items: flex-start; gap: 14px; text-align: left; width: 100%;
+  padding: 16px; background: var(--card); border: 2px solid var(--line); border-radius: var(--radius);
+  color: inherit; text-decoration: none; cursor: pointer; font: inherit;
+}
+.ac-card .ico { font-size: 2rem; flex: 0 0 auto; }
+.ac-card h3 { margin: 0 0 4px; color: var(--blue); }
+.ac-card p { margin: 0; color: var(--muted); }
+.ac-card .count { font-weight: 800; color: var(--green); }
+
+.ac-search { width: 100%; padding: 10px 12px; font: inherit; font-size: 1rem; min-height: 44px;
+  border: 2px solid var(--line); border-radius: 10px; margin-bottom: 10px; }
+
+.ac-people { display: grid; gap: 8px; }
+.ac-person {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px; min-height: 60px;
+  background: var(--card); border: 2px solid var(--line); border-radius: 12px; text-align: left; cursor: pointer; font: inherit;
+}
+.ac-person.on { border-color: var(--blue); background: var(--blue-soft); }
+.ac-avatar {
+  flex: 0 0 auto; width: 40px; height: 40px; border-radius: 50%; background: var(--blue-soft); color: var(--blue);
+  display: grid; place-items: center; font-weight: 800;
+}
+.ac-person .name { font-weight: 700; }
+.ac-person .chip { margin-left: auto; font-size: .8rem; font-weight: 700; color: var(--muted); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; white-space: nowrap; }
+
+.ac-project-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.ac-project-row .pname { font-weight: 700; flex: 1 1 auto; min-width: 8em; }
+.ac-project-row select { min-height: 44px; font: inherit; padding: 4px 8px; }
+.ac-badge { font-size: .8rem; font-weight: 700; border-radius: 999px; padding: 3px 10px; white-space: nowrap; }
+.ac-badge.changes { background: var(--blue-soft); color: var(--blue); }
+.ac-badge.role { background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+
+.tristate { display: inline-flex; border: 2px solid var(--line); border-radius: 10px; overflow: hidden; }
+.tristate button { font: inherit; font-size: .85rem; font-weight: 700; padding: 8px 10px; min-height: 44px;
+  background: var(--card); color: var(--muted); border: 0; border-right: 1px solid var(--line); cursor: pointer; }
+.tristate button:last-child { border-right: 0; }
+.tristate button.on.same { background: #eee; color: var(--ink); }
+.tristate button.on.allow { background: var(--blue-soft); color: var(--blue); }
+.tristate button.on.deny { background: var(--red-soft); color: var(--red); }
+
+.ac-check-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.ac-check-row .status { font-weight: 800; white-space: nowrap; }
+.ac-check-row .status.allow { color: var(--green); }
+.ac-check-row .status.deny { color: var(--red); }
+.ac-check-row .status.off { color: var(--muted); }
+.ac-check-row .why { color: var(--muted); font-size: .85rem; }
+.ac-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; }
+.ac-tabs button { flex: 0 0 auto; font: inherit; font-weight: 700; padding: 8px 14px; min-height: 44px;
+  background: var(--card); color: var(--muted); border: 2px solid var(--line); border-radius: 999px; cursor: pointer; }
+.ac-tabs button.on { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+
+.ac-grid-wrap { overflow-x: auto; }
+.ac-grid { border-collapse: collapse; width: 100%; font-size: .85rem; }
+.ac-grid th, .ac-grid td { padding: 8px 6px; border-bottom: 1px solid var(--line); text-align: center; white-space: nowrap; }
+.ac-grid th:first-child, .ac-grid td:first-child { text-align: left; white-space: normal; }
+.ac-grid thead th { background: var(--blue-soft); color: var(--blue); }
+
 /* Very small phones (320px) */
 @media (max-width: 359px) {
   body { font-size: 17px; }

@@ -63,3 +63,23 @@ Admin panel: http://127.0.0.1:8000/admin/
 - **Secrets** live only in Render's environment variables — never in Git. See `.env.example` for the list.
 - Use Supabase's **pooler** connection string (port 6543) on Render; the direct `db.<ref>.supabase.co`
   host is IPv6-only and Render cannot reach it.
+
+### Deploy order (RBAC)
+
+Access control (`core/access/`) is fail-closed: an empty permission catalogue or role template means
+everyone is locked out, silently. Always run these in order, against the **direct** connection string:
+
+```bash
+DATABASE_URL="$DIRECT_DATABASE_URL" python manage.py migrate    # 1. schema + seed (0006-0008)
+DATABASE_URL="$DIRECT_DATABASE_URL" python manage.py seed_rbac  # 2. idempotent; safe to re-run
+#    then: release / restart the app servers                   # 3.
+```
+
+`manage.py check` (which `migrate`/`runserver` run automatically) refuses to proceed with a clear
+`core.E001`/`core.E002` error if the catalogue or role template ends up empty, so step 1 alone can't
+silently produce a locked-out deployment.
+
+For a throwaway/staging environment, `seed_rbac --demo` also creates a walkthrough scenario (Renu the
+super admin, Parveen/Anil as single-project owners, Manoj a two-project manager with a per-project
+override) and prints login credentials. It refuses to run unless `DEBUG=True` or `--force` is passed,
+since it creates accounts with a well-known password — never run it against production.

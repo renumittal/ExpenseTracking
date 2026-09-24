@@ -4,6 +4,7 @@ from django.contrib import admin
 from django.utils import timezone
 
 from .models import (
+    AccessRole,
     Contractor,
     ContractorContract,
     ExpenseTransaction,
@@ -15,20 +16,40 @@ from .models import (
     Owner,
     Profile,
     Project,
-    ProjectManager,
     ProjectLabour,
-    ProjectOwner,
     RolePermission,
     Supplier,
+    UserAccess,
     annotate_last_paid,
 )
 
 
 @admin.register(Profile)
 class ProfileAdmin(admin.ModelAdmin):
+    """RBAC v2: `role` is no longer read for any access decision (see core/access/services.py) --
+    existing rows are kept (never deleted), this admin is read-only history."""
     list_display = ('user', 'role')
     list_filter = ('role',)
     search_fields = ('user__username', 'user__email')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(UserAccess)
+class UserAccessAdmin(admin.ModelAdmin):
+    """The RBAC v2 access table -- who has what role, GLOBAL or on which project."""
+    list_display = ('user', 'role', 'scope_type', 'project')
+    list_filter = ('scope_type', 'role')
+    search_fields = ('user__username', 'user__email', 'project__code', 'project__name')
+
+
+@admin.register(AccessRole)
+class AccessRoleAdmin(admin.ModelAdmin):
+    list_display = ('name', 'is_superadmin', 'is_system', 'description')
 
 
 @admin.register(Project)
@@ -44,24 +65,10 @@ class OwnerAdmin(admin.ModelAdmin):
     search_fields = ('name', 'mobile', 'user__username')
 
 
-@admin.register(ProjectOwner)
-class ProjectOwnerAdmin(admin.ModelAdmin):
-    list_display = ('project', 'owner')
-    list_filter = ('project',)
-    search_fields = ('project__code', 'project__name', 'owner__name')
-
-
 @admin.register(Manager)
 class ManagerAdmin(admin.ModelAdmin):
     list_display = ('name', 'mobile', 'monthly_salary', 'user')
     search_fields = ('name', 'mobile', 'user__username')
-
-
-@admin.register(ProjectManager)
-class ProjectManagerAdmin(admin.ModelAdmin):
-    list_display = ('project', 'manager')
-    list_filter = ('project',)
-    search_fields = ('project__code', 'project__name', 'manager__name')
 
 
 @admin.register(Labour)

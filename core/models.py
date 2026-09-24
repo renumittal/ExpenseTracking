@@ -73,6 +73,10 @@ class RolePermission(models.Model):
 
     Roles here include VIEWER, which is not a Profile.role yet. A user whose role has no row
     falls back to the built-in default in permissions.PERMISSION_DEFAULTS (fail closed).
+
+    RBAC v2: `role`/`permission` (strings) are deprecated in favour of `role_fk`/`resource_permission`
+    (real FKs, see access/services.py and access_catalog.py) but are kept and kept populated so nothing
+    reading the old columns breaks. New code should read/write `role_fk`/`resource_permission`.
     """
 
     ROLE_CHOICES = [
@@ -86,14 +90,200 @@ class RolePermission(models.Model):
     permission = models.CharField(max_length=50)
     allowed = models.BooleanField(default=False)
 
+    # RBAC v2 columns (ALTER: schema added them nullable, 0007 seeded every row, 0008 made them required).
+    role_fk = models.ForeignKey(
+        'AccessRole', on_delete=models.CASCADE, related_name='role_permissions', db_column='role_id',
+    )
+    resource_permission = models.ForeignKey(
+        'ResourcePermission', on_delete=models.CASCADE, related_name='role_permissions',
+    )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=['role', 'permission'], name='unique_role_permission'),
+            models.UniqueConstraint(fields=['role_fk', 'resource_permission'], name='unique_role_fk_resource_permission'),
         ]
         ordering = ['permission', 'role']
+        indexes = [
+            models.Index(fields=['role_fk']),
+        ]
 
     def __str__(self):
         return f'{self.role}: {self.permission} = {"ON" if self.allowed else "OFF"}'
+
+
+# ---------------------------------------------------------------------------
+# RBAC v2 -- role templates, per-user/per-project assignment, overrides, audit
+# (see SCHEMA_PLAN.md for the reuse/alter/new mapping, access/services.py for how these resolve)
+# ---------------------------------------------------------------------------
+
+class Resource(models.Model):
+    """A thing permissions act on: EXPENSE, PROJECT, SUPPLIER, ... (grouping metadata only)."""
+    code = models.CharField(max_length=50, unique=True)
+    label = models.CharField(max_length=100)
+
+    class Meta:
+        ordering = ['code']
+
+    def __str__(self):
+        return self.code
+
+
+class Action(models.Model):
+    """A verb permissions perform: VIEW, CREATE, EDIT, MANAGE, ... (grouping metadata only)."""
+    code = models.CharField(max_length=50, unique=True)
+    label = models.CharField(max_length=100)
+
+    class Meta:
+        ordering = ['code']
+
+    def __str__(self):
+        return self.code
+
+
+class ResourcePermission(models.Model):
+    """
+    A valid (resource, action) combination = one permission code. `code` is kept identical to the
+    strings already used everywhere else (`canEditExpense`, ...) -- see access_catalog.py.
+    """
+    code = models.CharField(max_length=50, unique=True)
+    resource = models.ForeignKey(Resource, on_delete=models.PROTECT, related_name='permissions')
+    action = models.ForeignKey(Action, on_delete=models.PROTECT, related_name='permissions')
+    group = models.CharField(max_length=30, blank=True, help_text='UI accordion group id (view/ops/project/...).')
+    label = models.CharField(max_length=150)
+    description = models.CharField(max_length=255, blank=True, help_text='Plain-language tooltip text.')
+    sort_order = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'code']
+
+    def __str__(self):
+        return self.code
+
+
+class AccessRole(models.Model):
+    """A role template: a named bundle of permissions (RolePermission rows) a user can be assigned."""
+    name = models.CharField(max_length=30, unique=True)
+    description = models.CharField(max_length=255, blank=True)
+    is_superadmin = models.BooleanField(default=False, help_text='Bypasses all permission checks everywhere.')
+    is_system = models.BooleanField(default=False, help_text='Seeded role; cannot be deleted from the UI.')
+
+    class Meta:
+        ordering = ['name']
+
+    def __str__(self):
+        return self.name
+
+
+class ScopeType(models.TextChoices):
+    GLOBAL = 'GLOBAL', 'Global'
+    PROJECT = 'PROJECT', 'Project'
+
+
+class UserAccess(models.Model):
+    """
+    One row = "this user has this role, either everywhere (GLOBAL) or on this one project (PROJECT)".
+    Replaces the *access decision* previously implied by ProjectOwner/ProjectManager membership
+    (role was implicit there: which table you were in). A user may hold several rows (e.g. MANAGER on
+    Site A, OWNER on Site B).
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='access_grants')
+    role = models.ForeignKey(AccessRole, on_delete=models.PROTECT, related_name='user_access')
+    scope_type = models.CharField(max_length=10, choices=ScopeType.choices)
+    project = models.ForeignKey(
+        'Project', on_delete=models.CASCADE, null=True, blank=True, related_name='user_access',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            # One row per (user, project, scope): a user can hold only one role on a given project,
+            # and only one GLOBAL row. Django's default UniqueConstraint treats NULL as distinct (so
+            # `project=NULL` rows -- the GLOBAL ones -- would never collide on their own), which is
+            # exactly django/django#26495 / the reason `nulls_distinct` exists -- but only from
+            # Django 5.0, and this project is pinned to Django==4.2.30 (requirements.txt), so the
+            # equivalent here is two partial constraints instead (no runtime version branching: a
+            # pinned dependency doesn't need one, and it would make `makemigrations --check` depend
+            # on which Django happens to be installed).
+            models.UniqueConstraint(
+                fields=['user', 'project'], condition=models.Q(project__isnull=False),
+                name='unique_user_project_access',
+            ),
+            models.UniqueConstraint(
+                fields=['user'], condition=models.Q(scope_type='GLOBAL'), name='unique_user_global_access',
+            ),
+            models.CheckConstraint(
+                check=(
+                    models.Q(scope_type='GLOBAL', project__isnull=True)
+                    | models.Q(scope_type='PROJECT', project__isnull=False)
+                ),
+                name='useraccess_scope_matches_project',
+            ),
+        ]
+        indexes = [
+            models.Index(fields=['user', 'project']),
+        ]
+
+    def __str__(self):
+        where = 'GLOBAL' if self.scope_type == ScopeType.GLOBAL else str(self.project_id)
+        return f'{self.user_id}: {self.role.name} @ {where}'
+
+    def clean(self):
+        if self.scope_type == ScopeType.GLOBAL and self.project_id:
+            raise ValidationError({'project': 'A global assignment cannot have a project.'})
+        if self.scope_type == ScopeType.PROJECT and not self.project_id:
+            raise ValidationError({'project': 'Pick a project for a project-level assignment.'})
+
+
+class OverrideEffect(models.TextChoices):
+    ALLOW = 'ALLOW', 'Allow'
+    DENY = 'DENY', 'Deny'
+
+
+class AccessOverride(models.Model):
+    """
+    A per-assignment exception to what the role template grants: "Manoj, on Site B, is Blocked from
+    Edit Expense even though Owner normally allows it" (DENY), or "... is given Extra access to X even
+    though their role normally doesn't allow it" (ALLOW). Deny always wins (see services.has_perm).
+    """
+    user_access = models.ForeignKey(UserAccess, on_delete=models.CASCADE, related_name='overrides')
+    resource_permission = models.ForeignKey(ResourcePermission, on_delete=models.CASCADE, related_name='overrides')
+    effect = models.CharField(max_length=10, choices=OverrideEffect.choices)
+    created_at = models.DateTimeField(auto_now_add=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['user_access', 'resource_permission'], name='unique_override'),
+        ]
+        indexes = [
+            models.Index(fields=['user_access']),
+        ]
+
+    def __str__(self):
+        return f'{self.user_access}: {self.resource_permission.code} = {self.effect}'
+
+
+class PermissionAuditLog(models.Model):
+    """Append-only record of every change made from the Access Control screens."""
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    target_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    action = models.CharField(max_length=50, help_text='e.g. ROLE_PERMISSION_CHANGED, USER_ACCESS_GRANTED')
+    detail = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.action} by {self.actor_id} @ {self.created_at:%Y-%m-%d %H:%M}'
 
 
 # ---------------------------------------------------------------------------
@@ -135,21 +325,6 @@ class Owner(models.Model):
         return self.name
 
 
-class ProjectOwner(models.Model):
-    """M2M-through table: an owner can be linked to multiple projects."""
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='project_owners')
-    owner = models.ForeignKey(Owner, on_delete=models.CASCADE, related_name='owned_projects')
-
-    class Meta:
-        unique_together = ('project', 'owner')
-        indexes = [
-            models.Index(fields=['project']),
-        ]
-
-    def __str__(self):
-        return f'{self.owner.name} @ {self.project.code}'
-
-
 # ---------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------
@@ -163,20 +338,6 @@ class Manager(models.Model):
 
     def __str__(self):
         return self.name
-
-
-class ProjectManager(models.Model):
-    project = models.ForeignKey(Project, on_delete=models.CASCADE, related_name='project_managers')
-    manager = models.ForeignKey(Manager, on_delete=models.CASCADE, related_name='managed_projects')
-
-    class Meta:
-        unique_together = ('project', 'manager')
-        indexes = [
-            models.Index(fields=['project']),
-        ]
-
-    def __str__(self):
-        return f'{self.manager.name} @ {self.project.code}'
 
 
 # ---------------------------------------------------------------------------
@@ -447,14 +608,16 @@ class ManagerFund(models.Model):
 
     def clean(self):
         """Rules shared by the API and Django admin. (Balance rules live in core/ledger.py.)"""
+        from .access import services  # deferred: access.services imports this module at load time
+
         errors = {}
         if self.fund_amount is not None and self.fund_amount <= 0:
             errors['fund_amount'] = 'Fund amount must be greater than zero.'
-        if self.project_id and self.manager_id and not ProjectManager.objects.filter(
-                project_id=self.project_id, manager_id=self.manager_id).exists():
+        if self.project_id and self.manager_id and not services.users_with_role(
+                self.project_id, 'MANAGER').filter(pk=self.manager.user_id).exists():
             errors['manager'] = 'This manager is not assigned to this project.'
-        if self.project_id and self.given_by_owner_id and not ProjectOwner.objects.filter(
-                project_id=self.project_id, owner_id=self.given_by_owner_id).exists():
+        if self.project_id and self.given_by_owner_id and not services.users_with_role(
+                self.project_id, 'OWNER').filter(pk=self.given_by_owner.user_id).exists():
             errors['given_by_owner'] = 'This owner does not belong to this project.'
         if self.pk and self.fund_amount is not None and self.fund_amount < self.distributed_amount:
             errors['fund_amount'] = 'Fund amount cannot be less than what has already been distributed from it.'

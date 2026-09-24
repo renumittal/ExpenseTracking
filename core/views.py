@@ -35,22 +35,24 @@ from .models import (
     annotate_last_paid,
 )
 from . import bills, ledger
+from .access import services
 from .permissions import (
     AdminOnly,
+    CAN_ADD_EXPENSE,
     CAN_DELETE_EXPENSE,
     CAN_EDIT_EXPENSE,
     CAN_MANAGE_PROJECT_SETTINGS,
+    CAN_RECORD_LABOUR_PAYMENT,
     CAN_UPLOAD_BILL,
     CAN_VIEW_BILL,
+    CAN_VIEW_EXPENSES,
     RoleAllowed,
     can_cancel_distribution,
     can_distribute_manager_fund,
     can_view_manager_fund,
     effective_permissions,
-    get_role,
     has_permission,
     is_admin,
-    is_owner,
     is_project_member,
     owns_project,
 )
@@ -103,7 +105,7 @@ class LoginView(ObtainAuthToken):
         return Response({
             'token': token.key,
             'username': user.username,
-            'role': get_role(user),
+            'role': services.display_role(user),
         })
 
 
@@ -127,10 +129,18 @@ class MeView(APIView):
         owner = getattr(user, 'owner_profile', None)
         manager = getattr(user, 'manager_profile', None)
         permissions, project_permissions = effective_permissions(user)
+        # Full per-project truth (every permission code, not just the 5 legacy SERVER_PERMS), from
+        # the RBAC v2 engine -- this is what lets the web app hide a button because of a per-project
+        # override (e.g. Manoj's EXPENSE.EDIT blocked on one project only), not just his role.
+        matrix = services.effective_matrix(user)
+        permissions_by_project = {
+            ('GLOBAL' if key == 'GLOBAL' else str(key)): {code: v['allowed'] for code, v in perms.items()}
+            for key, perms in matrix.items()
+        }
         return Response({
             'user_id': user.id,
             'username': user.username,
-            'role': get_role(user),
+            'role': services.display_role(user),
             'owner_id': owner.id if owner else None,
             'manager_id': manager.id if manager else None,
             'name': owner.name if owner else manager.name if manager else user.get_username(),
@@ -138,6 +148,7 @@ class MeView(APIView):
             # What the server will allow (the API enforces the same). The web app uses it to show/hide things.
             'permissions': permissions,
             'project_permissions': project_permissions,
+            'permissions_by_project': permissions_by_project,
             # The saved Role & Permissions matrix ({permission: {role: bool}}); the same on every device.
             'permission_matrix': stored_matrix(),
         })
@@ -146,7 +157,7 @@ class MeView(APIView):
 class ProjectPeopleView(APIView):
     """
     GET /projects/<id>/people/ -- the owners, managers and labour actually assigned to this project.
-    Read-only, built from the existing ProjectOwner / ProjectManager / ProjectLabour links. Only someone who
+    Read-only, built from UserAccess (OWNER/MANAGER grants) and ProjectLabour. Only someone who
     belongs to the project (or an admin) can ask; anyone else gets 404, so nothing about other projects leaks.
     Mobile numbers are deliberately not included.
     """
@@ -160,8 +171,10 @@ class ProjectPeopleView(APIView):
         labour = ProjectLabour.objects.filter(project=project).select_related('labour').order_by('labour__name')
         return Response({
             'project': {'id': project.id, 'name': project.name, 'code': project.code},
-            'owners': list(Owner.objects.filter(owned_projects__project=project).order_by('name').values('id', 'name')),
-            'managers': list(Manager.objects.filter(managed_projects__project=project).order_by('name').values('id', 'name')),
+            'owners': list(Owner.objects.filter(user__in=services.users_with_role(project, 'OWNER'))
+                           .order_by('name').values('id', 'name')),
+            'managers': list(Manager.objects.filter(user__in=services.users_with_role(project, 'MANAGER'))
+                              .order_by('name').values('id', 'name')),
             'labour': [{'id': l.labour_id, 'name': l.labour.name, 'type': l.labour.type, 'is_active': l.is_active}
                        for l in labour],
         })
@@ -173,7 +186,7 @@ class ProjectPeopleView(APIView):
 
 class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
     """
-    Admin: all projects (and the only one who can create). Owner: only projects they're linked to via ProjectOwner.
+    Admin: all projects (and the only one who can create). Owner: only projects they hold an OWNER-role grant on.
     PATCH (canManageProjectSettings, on a project you own) edits the project's details; its code never changes.
     """
 
@@ -191,11 +204,11 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         user = self.request.user
         if is_admin(user):
             return Project.objects.all()
-        return Project.objects.filter(project_owners__owner__user=user).distinct()
+        return services.projects_with_role(user, 'OWNER')
 
     def perform_update(self, serializer):
         user = self.request.user
-        if not (has_permission(user, CAN_MANAGE_PROJECT_SETTINGS) and owns_project(user, serializer.instance)):
+        if not services.has_perm(user, CAN_MANAGE_PROJECT_SETTINGS, serializer.instance):
             raise PermissionDenied('You cannot change this project\'s settings.')
         serializer.validated_data.pop('code', None)
         serializer.save()
@@ -318,11 +331,13 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
 
     serializer_class = ExpenseTransactionSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def _guard_change(self, instance, permission, allow_distribution=False):
-        if not has_permission(self.request.user, permission):
+        # Project-aware: respects a per-project ALLOW/DENY override (e.g. Manoj is OWNER on Site B
+        # but has EXPENSE.EDIT blocked there specifically), not just "does this role ever get this".
+        if not services.has_perm(self.request.user, permission, instance.project):
             raise PermissionDenied('You do not have permission to do this.')
         if instance.status == TransactionStatus.CANCELLED:
             raise ValidationError('This expense is already cancelled.')
@@ -339,9 +354,16 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        qs = ExpenseTransaction.objects.all() if is_admin(user) else ExpenseTransaction.objects.filter(
-            project__project_owners__owner__user=user
-        ).distinct()
+        if is_admin(user):
+            qs = ExpenseTransaction.objects.all()
+        else:
+            # Project-aware: only projects this user's role (with any per-project override applied)
+            # actually grants canViewExpenses on -- not just "any project they're linked to".
+            viewable = [
+                p.id for p in services.accessible_projects(user)
+                if services.has_perm(user, CAN_VIEW_EXPENSES, p)
+            ]
+            qs = ExpenseTransaction.objects.filter(project_id__in=viewable)
 
         params = self.request.query_params
         if params.get('project'):
@@ -367,12 +389,8 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         project = serializer.validated_data['project']
-        if not is_admin(user):
-            owned = Project.objects.filter(
-                project_owners__owner__user=user, pk=project.pk
-            ).exists()
-            if not owned:
-                raise PermissionDenied('You are not authorized on this project.')
+        if not services.has_perm(user, CAN_ADD_EXPENSE, project):
+            raise PermissionDenied('You are not authorized to add expenses on this project.')
         serializer.save(created_by=user)
 
     @action(detail=True, methods=['post'])
@@ -398,9 +416,9 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
         transaction is looked up through the normal project-scoped queryset (404 otherwise).
         """
         needed = CAN_UPLOAD_BILL if request.method == 'POST' else CAN_VIEW_BILL
-        if not has_permission(request.user, needed):
-            raise PermissionDenied('You do not have permission to ' + ('upload' if request.method == 'POST' else 'view') + ' bills.')
         instance = self.get_object()
+        if not services.has_perm(request.user, needed, instance.project):
+            raise PermissionDenied('You do not have permission to ' + ('upload' if request.method == 'POST' else 'view') + ' bills.')
         if request.method == 'POST':
             return self._upload_bill(request, instance)
         return self._view_bill(instance)
@@ -467,18 +485,13 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
 # Manager-facing endpoints
 # ---------------------------------------------------------------------------
 
-def _visible_projects(user):
-    """Projects whose manager funds this user may see: all (admin) or the ones they own."""
-    return Project.objects.all() if is_admin(user) else Project.objects.filter(project_owners__owner__user=user)
-
-
 def _scope(qs, user):
-    """Admin: everything. Owner: their projects. Manager: only their own rows."""
+    """Admin: everything. Rows on any project this user has an OWNER-role grant on, plus their own
+    rows anywhere as a manager (a person can hold both, on different projects)."""
     if is_admin(user):
         return qs
-    if is_owner(user):
-        return qs.filter(project__in=_visible_projects(user))
-    return qs.filter(manager__user=user)
+    owned = services.projects_with_role(user, 'OWNER')
+    return qs.filter(Q(project__in=owned) | Q(manager__user=user))
 
 
 def _filter_by_params(qs, params):
@@ -509,7 +522,9 @@ class ManagerFundViewSet(viewsets.ModelViewSet):
         return _filter_by_params(_scope(qs, self.request.user), self.request.query_params)
 
     def create(self, request, *args, **kwargs):
-        if not (is_admin(request.user) or is_owner(request.user)):
+        project_id = request.data.get('project')
+        if not (is_admin(request.user)
+                or services.users_with_role(project_id, 'OWNER').filter(pk=request.user.id).exists()):
             raise PermissionDenied('Only an owner can give a fund to a manager.')
         return super().create(request, *args, **kwargs)
 
@@ -747,8 +762,8 @@ def _candidate(labour):
 
 
 def _require_project_access(user, project):
-    """Same rule as expense entry: admin, or an owner linked to the project."""
-    if not is_admin(user) and not Project.objects.filter(project_owners__owner__user=user, pk=project.pk).exists():
+    """Same rule as expense entry: admin, or a real OWNER-role assignment on the project."""
+    if not is_admin(user) and not services.users_with_role(project, 'OWNER').filter(pk=user.id).exists():
         raise PermissionDenied('You are not authorized on this project.')
 
 
@@ -773,7 +788,7 @@ class ProjectLabourViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
         user = self.request.user
         qs = annotate_last_paid(ProjectLabour.objects.select_related('labour'))
         if not is_admin(user):
-            qs = qs.filter(project__project_owners__owner__user=user)
+            qs = qs.filter(project__in=services.projects_with_role(user, 'OWNER'))
         params = self.request.query_params
         if params.get('project'):
             qs = qs.filter(project_id=params['project'])
@@ -849,13 +864,20 @@ class LabourPaymentViewSet(viewsets.GenericViewSet):
 
     serializer_class = LabourPaymentBatchSerializer
     permission_classes = [RoleAllowed]
+    # OWNER only: the serializer requires `paid_by_owner` to be the acting user's own Owner record
+    # (self-attribution, see LabourPaymentBatchSerializer.validate), which a MANAGER can never satisfy
+    # -- a manager's equivalent flow is ManagerLabourDistributionViewSet ("distribute from my fund"),
+    # gated by canDistributeManagerFund (see can_distribute_manager_fund, now also project-aware).
     allowed_roles = {Role.OWNER}
 
     def create(self, request):
         ser = self.get_serializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
-        _require_project_access(request.user, data['project'])
+        # Project-aware: replaces the old ownership-only check with the real permission code,
+        # respecting a per-project override.
+        if not services.has_perm(request.user, CAN_RECORD_LABOUR_PAYMENT, data['project']):
+            raise PermissionDenied('You are not authorized to record labour payments on this project.')
 
         batch = uuid.uuid4()
         with transaction.atomic():
@@ -898,7 +920,7 @@ class ContractorContractViewSet(viewsets.ModelViewSet):
         if is_admin(user):
             qs = ContractorContract.objects.all()
         else:
-            qs = ContractorContract.objects.filter(project__project_owners__owner__user=user).distinct()
+            qs = ContractorContract.objects.filter(project__in=services.projects_with_role(user, 'OWNER'))
         if self.request.query_params.get('project'):
             qs = qs.filter(project_id=self.request.query_params['project'])
         return qs.select_related('contractor').order_by('id')
@@ -907,9 +929,7 @@ class ContractorContractViewSet(viewsets.ModelViewSet):
         user = self.request.user
         project = serializer.validated_data['project']
         if not is_admin(user):
-            owned = Project.objects.filter(
-                project_owners__owner__user=user, pk=project.pk
-            ).exists()
+            owned = services.users_with_role(project, 'OWNER').filter(pk=user.id).exists()
             if not owned:
                 raise PermissionDenied('You are not authorized on this project.')
         serializer.save()

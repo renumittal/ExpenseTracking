@@ -102,7 +102,7 @@
     reports: 'canViewReports',
     project: 'canViewProjects', newproject: 'canCreateProject',
     users: 'canManageUsers', members: 'canManageProjectMembers', settings: SETTINGS_ANY,
-    permissions: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
+    permissions: 'canManagePermissions', access: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
     fund: 'canViewManagerFund', givefund: 'canGiveManagerFund', distribute: 'canDistributeManagerFund',
   };
   const reportPermission = key => REPORT_PERMISSION[key] || 'canViewReports';
@@ -179,21 +179,47 @@
     return a ? a.role : null;
   }
 
-  // Unknown permission or no role -> false (fail closed). Reads the current matrix.
-  // Role permission only says WHAT a role may do; WHICH projects is decided by assignedProjects.
+  // Server-computed per-project truth (RBAC v2 access.services.effective_matrix, sent as part of
+  // /me/): { 'GLOBAL' | projectId: { permCode: bool } }. This is what makes a per-project override
+  // (e.g. Manoj has EXPENSE.EDIT blocked on one project only, even though his role there normally
+  // allows it) hide the right button on the right project. A real (non-demo) user's buttons are
+  // gated on this alone -- before it has loaded, every action button stays hidden rather than
+  // falling back to the role-only table below, which cannot tell projects apart and could show a
+  // button the per-project override would actually block. The role-only table remains only for the
+  // client-only demo users, who have no server matrix behind them at all.
+  let effectiveMatrix = null;
+  let effectiveMatrixError = false;
+  // `m` missing/malformed means /me/ answered but without a usable matrix (a server bug, or an old
+  // server version) -- distinct from "hasn't loaded yet" (effectiveMatrix still null) so the app can
+  // show a real error instead of silently behaving as if nobody has any permission anywhere.
+  const setEffectiveMatrix = m => {
+    const ok = m && typeof m === 'object';
+    effectiveMatrix = ok ? m : {};
+    effectiveMatrixError = !ok;
+  };
+  const matrixState = () => (effectiveMatrix === null ? 'loading' : effectiveMatrixError ? 'error' : 'ready');
+  const roleOnlyCan = (user, projectId, perm) => {
+    if (user.role === R.SUPER_ADMIN) return current[perm][R.SUPER_ADMIN];   // not tied to a project
+    const role = roleIn(user, projectId);
+    return !!role && current[perm][role];
+  };
+
+  // Unknown permission or no role -> false (fail closed).
   function can(user, projectId, perm) {
     const def = DEF[perm];
     if (!user || !def) return false;
     if (def.anyUser) return true;
-    if (user.role === R.SUPER_ADMIN) return current[perm][R.SUPER_ADMIN];   // not tied to a project
-    const role = roleIn(user, projectId);
-    return !!role && current[perm][role];
+    if (user.demo) return roleOnlyCan(user, projectId, perm);        // no server truth behind a demo user
+    if (!effectiveMatrix) return false;                              // /me/ hasn't loaded yet -- stay hidden
+    const scope = effectiveMatrix[projectId == null ? 'GLOBAL' : String(projectId)];
+    return !!(scope && scope[perm]);
   }
 
   const allows = (perm, can) => (typeof perm === 'function' ? perm(can) : [].concat(perm).some(can));   // one permission, any-of list, or a rule
   const navFor = can => NAV.filter(n => !n.perm || allows(n.perm, can));
   const routePermission = (page, arg) => (page === 'report' ? reportPermission(arg) : ROUTE_PERMISSION[page] || null);
 
-  window.Authz = { ROLES: R, ROLE_LIST, ROLE_LABEL, GROUPS, DEFINITIONS, DEMO_USERS, demoUser, buildUser, directory, roleIn, can, navFor,
-    routePermission, allows, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, setMatrix, isFixed, isDefault };
+  window.Authz = { ROLES: R, ROLE_LIST, ROLE_LABEL, GROUPS, DEFINITIONS, DEMO_USERS, demoUser, buildUser, directory, roleIn, can, navFor, matrixState,
+    routePermission, allows, reportPermission, canViewCategory, canAddCategory, getMatrix, defaultMatrix, setMatrix, isFixed, isDefault,
+    setEffectiveMatrix };
 })();

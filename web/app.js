@@ -128,6 +128,7 @@
     const projects = me.owner_id || me.is_super_admin ? await api('projects/') : me.role === 'MANAGER' ? await managerProjects(me) : [];
     state.me = me;
     Authz.setMatrix(me.permission_matrix);
+    Authz.setEffectiveMatrix(me.permissions_by_project);
     state.realProjects = projects.results || projects;
     applyUser();
   }
@@ -201,6 +202,11 @@
     const loggedIn = !!state.token && tab !== 'login';
     $view.onclick = null;   // a screen may attach a delegated click handler
     renderUserbar(loggedIn);
+    const warn = document.getElementById('permWarning');
+    const showWarning = loggedIn && state.user && !state.user.demo && Authz.matrixState() === 'error';
+    warn.hidden = !showWarning;
+    if (showWarning) warn.textContent = 'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें. '
+      + '(Permissions could not be loaded -- some buttons may be hidden. Please reload the page.)';
     const nav = document.getElementById('tabs');
     const items = loggedIn && state.user ? Authz.navFor(can) : [];
     const more = items.filter(n => !n.primary);
@@ -1443,8 +1449,8 @@
             <label for="ps-rem">नोट <small>Remarks</small></label><input id="ps-rem" type="text" value="${esc(p.remarks || '')}">
             <button class="btn green" type="submit">💾 सेव करें <span class="sub">SAVE</span></button></form></div>
         ${can('canManageProjectMembers') ? '<a class="btn line" href="#/members">🤝 सदस्य <span class="sub">Project Members</span></a>' : ''}` : (can('canManageProjectSettings') ? noProject() : '')) +
-      (can('canManagePermissions') ? `<h2>🔐 Role & Permissions</h2>
-        <a class="btn line" href="#/permissions">🔐 Role & Permissions <span class="sub">Choose what each role can do</span></a>` : '') +
+      (can('canManagePermissions') ? `<h2>🔐 Access Control</h2>
+        <a class="btn line" href="#/access">🔐 Access Control <span class="sub">Roles, user access, and check access</span></a>` : '') +
       (can('canManageApplicationSettings') ? `<h2>ऐप सेटिंग <small>Application Settings</small></h2>
         <div class="card muted">सिर्फ़ Super Admin को दिखता है. अभी कोई ऐप सेटिंग नहीं है.<br><small>Super Admin only. No application settings yet.</small></div>` : '');
     const f = document.getElementById('psf');
@@ -1536,6 +1542,318 @@
       commit(() => api('permission-matrix/', { method: 'DELETE' }), 'reset');
     });
     drawMobile();
+  }
+
+  // ================= Settings -> Access Control (super admin only) =================
+  // Three screens: landing (3 cards), User Access (person-centric), Check Access. The existing
+  // Role & Permissions screen above (#/permissions) is the third card, unchanged -- it already talks
+  // to the server's role-template table, which the RBAC v2 engine reads directly, so nothing there
+  // needed to change.
+  const ac = { catalog: null, users: null, search: '', selectedUserId: null, detail: null, checkUserId: null, checkData: null, compareAll: false };
+
+  async function loadAcCatalog() { if (!ac.catalog) ac.catalog = await api('access/catalog/'); return ac.catalog; }
+  function toast(text) {
+    const t = document.createElement('div');
+    t.className = 'msg ok';
+    t.setAttribute('role', 'status');
+    t.style.cssText = 'position:fixed;left:16px;right:16px;bottom:calc(var(--tabs-h,0px) + 16px);z-index:40;max-width:600px;margin:0 auto;';
+    t.textContent = text;
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 4000);
+  }
+  function drawer(html, onClose) {
+    const box = document.createElement('div');
+    box.className = 'modal';
+    box.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true">${html}</div>`;
+    document.body.appendChild(box);
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); if (onClose) onClose(); };
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', close);
+    box.addEventListener('click', e => { if (e.target === box) close(); });
+    return { box, close };
+  }
+  const roleLabel = name => (name || '').replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  const initials = name => (String(name || '').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('') || '?').toUpperCase();
+
+  async function screenAccess(arg, params) {
+    if (!can('canManagePermissions')) return screenNoAccess();
+    if (arg === 'users') return screenAccessUsers(params);
+    if (arg === 'check') return screenAccessCheck(params);
+    return screenAccessLanding();
+  }
+
+  async function screenAccessLanding() {
+    chrome('settings', '#/settings');
+    loading();
+    let users;
+    try { users = await api('access/users/'); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    const superCount = users.filter(u => u.is_superadmin).length;
+    $view.innerHTML = `<h1>🔐 Access Control</h1>
+      <div class="msg info">Manage what each role can do, who can open which project, and check exactly what someone can do.</div>
+      <div class="ac-cards">
+        <a class="ac-card" href="#/permissions"><span class="ico">🧩</span><div><h3>Roles & Permissions</h3><p>What each role can do by default.</p></div></a>
+        <a class="ac-card" href="#/access/users"><span class="ico">👥</span><div><h3>User Access <span class="count">${users.length}</span></h3><p>Who can open which project, with what role.</p></div></a>
+        <a class="ac-card" href="#/access/check"><span class="ico">🔍</span><div><h3>Check Access</h3><p>See exactly what a person can do${superCount ? ` — ${superCount} super admin${superCount > 1 ? 's' : ''}` : ''}.</p></div></a>
+      </div>`;
+  }
+
+  // ---------------- User Access ----------------
+
+  async function screenAccessUsers() {
+    chrome('settings', '#/settings');
+    loading();
+    let catalog;
+    try { catalog = await loadAcCatalog(); ac.users = await api('access/users/'); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    if (ac.selectedUserId && !ac.users.some(u => u.id === ac.selectedUserId)) ac.selectedUserId = null;
+    drawAccessUsers(catalog);
+  }
+
+  function drawAccessUsers(catalog) {
+    const q = ac.search.toLowerCase();
+    const list = ac.users.filter(u => !q || u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q));
+    $view.innerHTML = `<h1>👥 User Access</h1>
+      <input class="ac-search" id="acq" placeholder="Search people..." value="${esc(ac.search)}" aria-label="Search people">
+      <div class="ac-people" id="acPeople">${list.length ? list.map(u => `
+        <button type="button" class="ac-person ${u.id === ac.selectedUserId ? 'on' : ''}" data-id="${u.id}">
+          <span class="ac-avatar">${esc(initials(u.name))}</span>
+          <span class="name">${esc(u.name)}</span>
+          <span class="chip">${u.is_superadmin ? 'Super Admin' : u.has_global ? 'All projects' : `${u.project_count} project${u.project_count === 1 ? '' : 's'}`}</span>
+        </button>`).join('') : '<div class="empty"><div class="ico">🔍</div><p>No one matches your search.</p></div>'}
+      </div>
+      <div id="acDetail"></div>`;
+    document.getElementById('acq').oninput = e => { ac.search = e.target.value; drawAccessUsers(catalog); };
+    document.querySelectorAll('#acPeople .ac-person').forEach(b => b.onclick = () => { ac.selectedUserId = Number(b.dataset.id); ac.detail = null; drawAccessUsers(catalog); loadAccessDetail(catalog); });
+    if (ac.selectedUserId) { if (ac.detail) renderAccessDetail(catalog); else loadAccessDetail(catalog); }
+  }
+
+  async function loadAccessDetail(catalog) {
+    document.getElementById('acDetail').innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+    try { ac.detail = await api(`access/users/${ac.selectedUserId}/access/`); } catch (e) { document.getElementById('acDetail').innerHTML = errBox(friendly(e)); return; }
+    renderAccessDetail(catalog);
+  }
+
+  function renderAccessDetail(catalog) {
+    const d = ac.detail, el = document.getElementById('acDetail');
+    if (!d) return;
+    const projectOptions = state.realProjects;
+    el.innerHTML = `<div class="card">
+        <h2 style="margin-top:0">${esc(d.user.name)} <small class="muted">${esc(d.user.username)}</small></h2>
+        ${d.is_superadmin ? '<div class="msg info">This person is a Super Admin: full access everywhere.</div>' : ''}
+        ${d.access.length ? d.access.map(a => `
+          <div class="ac-project-row" data-access="${a.id}">
+            <span class="pname">${a.scope_type === 'GLOBAL' ? '🌐 All projects' : esc(a.project_name)}</span>
+            <select data-role-for="${a.id}" aria-label="Role">
+              ${catalog.roles.filter(r => !r.is_superadmin || a.role === 'SUPER_ADMIN').map(r => `<option value="${r.name}" ${r.name === a.role ? 'selected' : ''}>${esc(roleLabel(r.name))}</option>`).join('')}
+            </select>
+            <button type="button" class="ac-badge ${a.override_count ? 'changes' : 'role'}" data-special="${a.id}">⚙️ Special changes${a.override_count ? ` (${a.override_count})` : ''}</button>
+            <button type="button" class="btn line" style="width:auto;min-height:40px;padding:4px 12px" data-remove="${a.id}">Remove</button>
+          </div>`).join('') : '<p class="muted">No project access yet.</p>'}
+        <button type="button" class="btn green" id="acAddAccess" style="margin-top:14px">➕ Add project access</button>
+      </div>
+      <div class="row-actions">
+        <button type="button" class="btn line" id="acCopyFrom">📋 Copy access from another person</button>
+        <button type="button" class="btn line" id="acSameRole">🔁 Give same role on all projects</button>
+        <button type="button" class="btn danger" id="acRemoveAll">🗑 Remove from all projects</button>
+      </div>`;
+
+    el.querySelectorAll('[data-role-for]').forEach(sel => sel.onchange = async () => {
+      const id = Number(sel.dataset.roleFor);
+      try {
+        await api(`access/users/${ac.selectedUserId}/access/${id}/`, { method: 'PATCH', body: { role: sel.value } });
+        toast('Role updated.');
+        await loadAccessDetail(catalog);
+      } catch (e) { alert(serverMsg(e) || friendly(e)); await loadAccessDetail(catalog); }
+    });
+    el.querySelectorAll('[data-remove]').forEach(b => b.onclick = () => confirmBox('Remove this project access?', 'Remove', async () => {
+      try { await api(`access/users/${ac.selectedUserId}/access/${b.dataset.remove}/`, { method: 'DELETE' }); toast('Removed.'); await screenAccessUsers(); }
+      catch (e) { alert(serverMsg(e) || friendly(e)); }
+    }));
+    el.querySelectorAll('[data-special]').forEach(b => b.onclick = () => openOverridesDrawer(catalog, Number(b.dataset.special)));
+    document.getElementById('acAddAccess').onclick = () => openAddAccessDrawer(catalog, projectOptions);
+    document.getElementById('acCopyFrom').onclick = () => openCopyFromDrawer(catalog);
+    document.getElementById('acSameRole').onclick = () => openSameRoleDrawer(catalog);
+    document.getElementById('acRemoveAll').onclick = () => confirmBox('Remove this person from every project? This cannot be undone.', 'Remove all', async () => {
+      try { await api(`access/users/${ac.selectedUserId}/access/all/`, { method: 'DELETE' }); toast('All access removed.'); await screenAccessUsers(); }
+      catch (e) { alert(serverMsg(e) || friendly(e)); }
+    });
+  }
+
+  function openAddAccessDrawer(catalog, projects) {
+    const roles = catalog.roles.filter(r => !r.is_superadmin);
+    const { box, close } = drawer(`
+      <h2 style="margin-top:0">Add project access</h2>
+      <div id="aaMsg"></div>
+      <label class="q">1. Pick project(s)</label>
+      <div style="max-height:180px;overflow-y:auto;border:2px solid var(--line);border-radius:10px;padding:8px">
+        ${projects.map(p => `<label style="display:flex;align-items:center;gap:8px;min-height:40px"><input type="checkbox" value="${p.id}" class="aa-proj"> ${esc(p.name)}</label>`).join('') || '<p class="muted">No projects yet.</p>'}
+      </div>
+      <label class="q" style="margin-top:14px">2. Pick role</label>
+      <div>${roles.map((r, i) => `<label style="display:flex;gap:8px;align-items:flex-start;margin:8px 0"><input type="radio" name="aa-role" value="${r.name}" ${i === 0 ? 'checked' : ''}> <span><b>${esc(roleLabel(r.name))}</b><br><small class="muted">${esc(r.description)}</small></span></label>`).join('')}</div>
+      <button type="button" class="btn line" style="margin-top:10px" id="aaCancel">Cancel</button>
+      <button type="button" class="btn green" id="aaSave">Save</button>`);
+    box.querySelector('#aaCancel').onclick = close;
+    box.querySelector('#aaSave').onclick = async () => {
+      const project_ids = [...box.querySelectorAll('.aa-proj:checked')].map(c => Number(c.value));
+      const role = box.querySelector('input[name=aa-role]:checked').value;
+      if (!project_ids.length) { box.querySelector('#aaMsg').innerHTML = errBox('Pick at least one project.'); return; }
+      try {
+        await api(`access/users/${ac.selectedUserId}/access/`, { method: 'POST', body: { scope_type: 'PROJECT', project_ids, role } });
+        close(); toast('Project access added.'); await screenAccessUsers();
+      } catch (e) { box.querySelector('#aaMsg').innerHTML = errBox(serverMsg(e) || friendly(e)); }
+    };
+  }
+
+  function openCopyFromDrawer(catalog) {
+    const others = ac.users.filter(u => u.id !== ac.selectedUserId);
+    const { box, close } = drawer(`
+      <h2 style="margin-top:0">Copy access from another person</h2>
+      <div id="cfMsg"></div>
+      <label for="cfSel">Copy from</label>
+      <select id="cfSel">${others.map(u => `<option value="${u.id}">${esc(u.name)}</option>`).join('')}</select>
+      <button type="button" class="btn line" style="margin-top:10px" id="cfCancel">Cancel</button>
+      <button type="button" class="btn green" id="cfSave">Copy</button>`);
+    box.querySelector('#cfCancel').onclick = close;
+    box.querySelector('#cfSave').onclick = async () => {
+      try {
+        await api(`access/users/${ac.selectedUserId}/copy-from/`, { method: 'POST', body: { from_user_id: Number(box.querySelector('#cfSel').value) } });
+        close(); toast('Access copied.'); await screenAccessUsers();
+      } catch (e) { box.querySelector('#cfMsg').innerHTML = errBox(serverMsg(e) || friendly(e)); }
+    };
+  }
+
+  function openSameRoleDrawer(catalog) {
+    const roles = catalog.roles.filter(r => !r.is_superadmin);
+    const { box, close } = drawer(`
+      <h2 style="margin-top:0">Give same role on all projects</h2>
+      <div id="srMsg"></div>
+      <select id="srSel">${roles.map(r => `<option value="${r.name}">${esc(roleLabel(r.name))}</option>`).join('')}</select>
+      <button type="button" class="btn line" style="margin-top:10px" id="srCancel">Cancel</button>
+      <button type="button" class="btn green" id="srSave">Apply</button>`);
+    box.querySelector('#srCancel').onclick = close;
+    box.querySelector('#srSave').onclick = async () => {
+      try {
+        await api(`access/users/${ac.selectedUserId}/same-role-all/`, { method: 'POST', body: { role: box.querySelector('#srSel').value } });
+        close(); toast('Updated.'); await screenAccessUsers();
+      } catch (e) { box.querySelector('#srMsg').innerHTML = errBox(serverMsg(e) || friendly(e)); }
+    };
+  }
+
+  async function openOverridesDrawer(catalog, accessId) {
+    let data;
+    try { data = await api(`access/users/${ac.selectedUserId}/access/${accessId}/overrides/`); }
+    catch (e) { alert(friendly(e)); return; }
+    const groups = catalog.groups.filter(g => data.rows.some(r => r.group === g.id));
+    const changed = () => data.rows.filter(r => r.state !== 'same').length;
+    const stateOf = code => data.rows.find(r => r.code === code).state;
+    const setState = (code, s) => { data.rows.find(r => r.code === code).state = s; };
+    const { box, close } = drawer(`
+      <h2 style="margin-top:0">Special changes for this project</h2>
+      <p class="muted" id="ovCount">${changed()} special change${changed() === 1 ? '' : 's'}${changed() ? ' — <a href="#" id="ovReset">Reset all</a>' : ''}</p>
+      <div id="ovMsg"></div>
+      <div id="ovRows">${groups.map(g => `<h3 style="color:var(--blue);margin:14px 0 4px">${esc(g.label)}</h3>` +
+        data.rows.filter(r => r.group === g.id).map(r => `
+          <div class="ac-project-row" title="${esc(r.description)}">
+            <span class="pname">${esc(r.label)} <small class="muted">(role gives: ${r.role_gives ? '✓' : '✗'})</small></span>
+            <span class="tristate" data-code="${r.code}">
+              <button type="button" data-v="same" class="${r.state === 'same' ? 'on same' : ''}">Same as role</button>
+              <button type="button" data-v="allow" class="${r.state === 'allow' ? 'on allow' : ''}">➕ Extra</button>
+              <button type="button" data-v="deny" class="${r.state === 'deny' ? 'on deny' : ''}">⛔ Block</button>
+            </span>
+          </div>`).join('')).join('')}</div>
+      <button type="button" class="btn line" style="margin-top:10px" id="ovCancel">Cancel</button>
+      <button type="button" class="btn green" id="ovSave">Save</button>`);
+    const refreshCount = () => { box.querySelector('#ovCount').innerHTML = `${changed()} special change${changed() === 1 ? '' : 's'}${changed() ? ' — <a href="#" id="ovReset">Reset all</a>' : ''}`; bindReset(); };
+    const bindReset = () => { const a = box.querySelector('#ovReset'); if (a) a.onclick = ev => { ev.preventDefault(); data.rows.forEach(r => r.state = 'same'); redraw(); }; };
+    const redraw = () => {
+      box.querySelectorAll('.tristate').forEach(t => {
+        const s = stateOf(t.dataset.code);
+        t.querySelectorAll('button').forEach(b => b.className = b.dataset.v === s ? `on ${s}` : '');
+      });
+      refreshCount();
+    };
+    box.querySelectorAll('.tristate button').forEach(b => b.onclick = () => { setState(b.closest('.tristate').dataset.code, b.dataset.v); redraw(); });
+    bindReset();
+    box.querySelector('#ovCancel').onclick = close;
+    box.querySelector('#ovSave').onclick = async () => {
+      const changes = {}; data.rows.filter(r => r.state !== 'same' || true).forEach(r => changes[r.code] = r.state);
+      try {
+        await api(`access/users/${ac.selectedUserId}/access/${accessId}/overrides/`, { method: 'PUT', body: { changes } });
+        close(); toast('Special changes saved.'); await screenAccessUsers();
+      } catch (e) { box.querySelector('#ovMsg').innerHTML = errBox(serverMsg(e) || friendly(e)); }
+    };
+  }
+
+  // ---------------- Check Access ----------------
+
+  async function screenAccessCheck() {
+    chrome('settings', '#/settings');
+    loading();
+    let catalog, users;
+    try { catalog = await loadAcCatalog(); users = ac.users || (ac.users = await api('access/users/')); }
+    catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    drawAccessCheck(catalog, users);
+  }
+
+  function drawAccessCheck(catalog, users) {
+    $view.innerHTML = `<h1>🔍 Check Access</h1>
+      <label for="chkUser" class="q">Pick a person</label>
+      <select id="chkUser"><option value="">Choose...</option>${users.map(u => `<option value="${u.id}" ${u.id === ac.checkUserId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
+      <div id="chkBody"></div>
+      <h2 style="margin-top:28px">Who can...?</h2>
+      <label for="whoPerm" class="q">Permission</label>
+      <select id="whoPerm">${catalog.permissions.map(p => `<option value="${p.code}">${esc(p.label)}</option>`).join('')}</select>
+      <label for="whoProj" class="q">Project</label>
+      <select id="whoProj"><option value="GLOBAL">Every project</option>${state.realProjects.map(p => `<option value="${p.id}">${esc(p.name)}</option>`).join('')}</select>
+      <button type="button" class="btn line" id="whoGo" style="margin-top:8px">Search</button>
+      <div id="whoResult"></div>`;
+    document.getElementById('chkUser').onchange = async e => {
+      ac.checkUserId = e.target.value ? Number(e.target.value) : null;
+      ac.checkData = null;
+      if (!ac.checkUserId) { document.getElementById('chkBody').innerHTML = ''; return; }
+      document.getElementById('chkBody').innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+      try { ac.checkData = await api(`access/check/${ac.checkUserId}/`); } catch (e2) { document.getElementById('chkBody').innerHTML = errBox(friendly(e2)); return; }
+      renderCheckBody(catalog);
+    };
+    document.getElementById('whoGo').onclick = async () => {
+      const code = document.getElementById('whoPerm').value, project = document.getElementById('whoProj').value;
+      const out = document.getElementById('whoResult');
+      out.innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+      try {
+        const rows = await api(`access/who-can/?code=${encodeURIComponent(code)}&project=${encodeURIComponent(project)}`);
+        out.innerHTML = rows.length ? `<div class="ac-people">${rows.map(r => `<div class="ac-person"><span class="ac-avatar">${esc(initials(r.name))}</span><span class="name">${esc(r.name)}</span><span class="chip">${esc(r.reason)}</span></div>`).join('')}</div>`
+          : '<div class="empty"><div class="ico">🔍</div><p>No one can do this yet.</p></div>';
+      } catch (e2) { out.innerHTML = errBox(friendly(e2)); }
+    };
+    if (ac.checkUserId && ac.checkData) renderCheckBody(catalog);
+  }
+
+  function renderCheckBody(catalog) {
+    const el = document.getElementById('chkBody');
+    const scopes = ac.checkData.scopes;
+    if (!scopes.length) { el.innerHTML = '<div class="empty"><div class="ico">🚫</div><p>This person has no access anywhere.</p></div>'; return; }
+    const activeKey = el.dataset.active || scopes[0].key;
+    const codeLabel = code => (catalog.permissions.find(p => p.code === code) || { label: code }).label;
+    const reasonText = (code, source) => source === 'deny' ? 'Blocked for this project' : source === 'allow' ? 'Extra access given' : source === 'role' ? 'From their role' : 'Not allowed';
+    const renderTabs = () => `<div class="ac-tabs">${scopes.map(s => `<button type="button" data-scope="${s.key}" class="${s.key == activeKey && !ac.compareAll ? 'on' : ''}">${esc(s.label)}</button>`).join('')}
+        <button type="button" data-compare="1" class="${ac.compareAll ? 'on' : ''}">📊 Compare all projects</button></div>`;
+    if (ac.compareAll) {
+      el.innerHTML = renderTabs() + `<div class="ac-grid-wrap"><table class="ac-grid"><thead><tr><th>Permission</th>${scopes.map(s => `<th>${esc(s.label)}</th>`).join('')}</tr></thead><tbody>
+        ${catalog.permissions.map(p => `<tr><td>${esc(p.label)}</td>${scopes.map(s => {
+          const v = s.permissions[p.code]; return `<td>${v && v.allowed ? '✅' : v && v.source === 'deny' ? '⛔' : '—'}</td>`;
+        }).join('')}</tr>`).join('')}</tbody></table></div>`;
+    } else {
+      const scope = scopes.find(s => s.key == activeKey) || scopes[0];
+      el.innerHTML = renderTabs() + catalog.groups.map(g => `<h3 style="color:var(--blue);margin:14px 0 4px">${esc(g.label)}</h3>` +
+        catalog.permissions.filter(p => p.group === g.id).map(p => {
+          const v = scope.permissions[p.code] || { allowed: false, source: null };
+          const status = v.source === 'deny' ? { c: 'deny', t: '⛔ Blocked' } : v.allowed ? { c: 'allow', t: '✓ Allowed' } : { c: 'off', t: '✗ Not allowed' };
+          return `<div class="ac-check-row" title="${esc(p.description)}"><span class="status ${status.c}">${status.t}</span><span>${esc(p.label)}</span><span class="why">${esc(reasonText(p.code, v.source))}</span></div>`;
+        }).join('')).join('');
+    }
+    el.dataset.active = activeKey;
+    el.querySelectorAll('[data-scope]').forEach(b => b.onclick = () => { ac.compareAll = false; el.dataset.active = b.dataset.scope; renderCheckBody(catalog); });
+    const cmp = el.querySelector('[data-compare]'); if (cmp) cmp.onclick = () => { ac.compareAll = !ac.compareAll; renderCheckBody(catalog); };
   }
 
   // Small Cancel / confirm dialog (same look as the other pop-ups).
@@ -1889,6 +2207,7 @@
       case 'members': return screenMembers();
       case 'settings': return screenSettings();
       case 'permissions': return screenPermissions();
+      case 'access': return screenAccess(arg, params);
       case 'newproject': return screenNewProject();
       case 'fund': return screenFund();
       case 'givefund': return screenGiveFund();

@@ -13,6 +13,7 @@ from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
 
 from .models import (
+    AccessRole,
     Contractor,
     ContractorContract,
     ExpenseCategory,
@@ -23,20 +24,26 @@ from .models import (
     Owner,
     PartyType,
     PaymentMode,
-    Profile,
     Project,
     ProjectLabour,
-    ProjectManager,
-    ProjectOwner,
     Role,
     RolePermission,
+    ScopeType,
     Supplier,
     Labour,
     TransactionStatus,
+    UserAccess,
     ZERO,
 )
 
 User = get_user_model()
+
+
+def grant(user, role_name, project):
+    """UserAccess is the only source of access truth: a PROJECT-scoped role grant."""
+    return UserAccess.objects.create(
+        user=user, role=AccessRole.objects.get(name=role_name), project=project, scope_type=ScopeType.PROJECT,
+    )
 
 
 class RoleBasedAccessTests(APITestCase):
@@ -46,25 +53,25 @@ class RoleBasedAccessTests(APITestCase):
         self.project_b = Project.objects.create(name='Project B', code='B')
 
         self.owner_a_user = User.objects.create_user(username='owner_a', password='pass12345')
-        Profile.objects.create(user=self.owner_a_user, role=Role.OWNER)
         self.owner_a = Owner.objects.create(user=self.owner_a_user, name='Owner A')
-        ProjectOwner.objects.create(project=self.project_a, owner=self.owner_a)
+        grant(self.owner_a.user, 'OWNER', self.project_a)
 
         self.owner_b_user = User.objects.create_user(username='owner_b', password='pass12345')
-        Profile.objects.create(user=self.owner_b_user, role=Role.OWNER)
         self.owner_b = Owner.objects.create(user=self.owner_b_user, name='Owner B')
-        ProjectOwner.objects.create(project=self.project_b, owner=self.owner_b)
+        grant(self.owner_b.user, 'OWNER', self.project_b)
 
         self.manager_user = User.objects.create_user(username='manager_1', password='pass12345')
-        Profile.objects.create(user=self.manager_user, role=Role.MANAGER)
         self.manager = Manager.objects.create(user=self.manager_user, name='Manager 1')
+        # RBAC v2: a role only grants access on a project the person is actually assigned to
+        # ("no assignment -> no project access"), so this manager needs the ProjectManager link
+        # their ManagerFund row below already implies.
+        grant(self.manager.user, 'MANAGER', self.project_a)
 
         self.other_manager_user = User.objects.create_user(username='manager_2', password='pass12345')
-        Profile.objects.create(user=self.other_manager_user, role=Role.MANAGER)
         self.other_manager = Manager.objects.create(user=self.other_manager_user, name='Manager 2')
+        grant(self.other_manager.user, 'MANAGER', self.project_b)
 
         self.admin_user = User.objects.create_superuser(username='admin_1', password='pass12345', email='a@a.com')
-        Profile.objects.create(user=self.admin_user, role=Role.ADMIN)
 
         self.fund = ManagerFund.objects.create(
             project=self.project_a, manager=self.manager, fund_date='2026-01-01',
@@ -93,10 +100,15 @@ class RoleBasedAccessTests(APITestCase):
         response = self.client.get('/api/contractor-contracts/')
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_manager_cannot_access_expense_transactions(self):
+    def test_manager_sees_no_expenses_without_view_permission(self):
+        # RBAC v2: the endpoint itself is reachable by MANAGER now (they may still need it for
+        # canAddExpense/canEditExpense on a project), but canViewExpenses defaults to OFF for
+        # MANAGER (see access_catalog.py / web/authz.js), so the list is empty rather than a
+        # blanket 403 -- a per-project override could grant it without any code change.
         self.auth_as(self.manager_user)
         response = self.client.get('/api/expense-transactions/')
-        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])
 
     # -- Manager: sees only own ManagerFund rows ---------------------------
 
@@ -159,14 +171,12 @@ class ExpenseApiTests(APITestCase):
         self.project = Project.objects.create(name='Project A', code='A')
 
         self.owner_user = User.objects.create_user(username='owner_a', password='pass12345')
-        Profile.objects.create(user=self.owner_user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.owner_user, name='Owner A')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
 
         self.manager_user = User.objects.create_user(username='manager_1', password='pass12345')
-        Profile.objects.create(user=self.manager_user, role=Role.MANAGER)
         self.manager = Manager.objects.create(user=self.manager_user, name='Manager 1')
-        ProjectManager.objects.create(project=self.project, manager=self.manager)   # a manager must be on the project
+        grant(self.manager.user, 'MANAGER', self.project)   # a manager must be on the project
 
         self.labour = Labour.objects.create(name='Ramu')
         ProjectLabour.objects.create(project=self.project, labour=self.labour)      # ...and the labour too
@@ -322,13 +332,12 @@ class ReportingTests(APITestCase):
         self.project = Project.objects.create(name='Project A', code='A')
 
         self.owner_user = User.objects.create_user(username='owner_a', password='pass12345')
-        Profile.objects.create(user=self.owner_user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.owner_user, name='Owner A')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
 
         self.manager_user = User.objects.create_user(username='manager_1', password='pass12345')
-        Profile.objects.create(user=self.manager_user, role=Role.MANAGER)
         self.manager = Manager.objects.create(user=self.manager_user, name='Manager 1')
+        grant(self.manager.user, 'MANAGER', self.project)
 
         self.labour = Labour.objects.create(name='Ramu')
         self.other_labour = Labour.objects.create(name='Shyam')
@@ -490,7 +499,6 @@ class ReportingTests(APITestCase):
     def test_manager_fund_report_scoped_to_own_funds_for_manager(self):
         other_project = Project.objects.create(name='Project B', code='B')
         other_manager_user = User.objects.create_user(username='manager_2', password='pass12345')
-        Profile.objects.create(user=other_manager_user, role=Role.MANAGER)
         other_manager = Manager.objects.create(user=other_manager_user, name='Manager 2')
         ManagerFund.objects.create(
             project=other_project, manager=other_manager, fund_date='2026-01-01',
@@ -506,9 +514,8 @@ class ReportingTests(APITestCase):
     def test_owner_cannot_see_other_owners_project_dashboard(self):
         other_project = Project.objects.create(name='Project B', code='B')
         other_owner_user = User.objects.create_user(username='owner_b', password='pass12345')
-        Profile.objects.create(user=other_owner_user, role=Role.OWNER)
         other_owner = Owner.objects.create(user=other_owner_user, name='Owner B')
-        ProjectOwner.objects.create(project=other_project, owner=other_owner)
+        grant(other_owner.user, 'OWNER', other_project)
 
         self.auth_as(other_owner_user)
         response = self.client.get(f'/api/projects/{self.project.id}/dashboard/')
@@ -521,9 +528,8 @@ class SimpleFrontendSupportTests(APITestCase):
     def setUp(self):
         self.project = Project.objects.create(name='Home Build', code='HB')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
         Project.objects.create(name='Other', code='OT')
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
 
@@ -541,7 +547,6 @@ class SimpleFrontendSupportTests(APITestCase):
         self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 403)
         self.assertEqual(Labour.objects.count(), 0)
         admin = User.objects.create_superuser(username='adm', password='pass12345', email='a@a.com')
-        Profile.objects.create(user=admin, role=Role.ADMIN)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
         self.assertEqual(self.client.post('/api/labour/', {'name': 'Mohan'}).status_code, 201)
         self.assertEqual(Labour.objects.count(), 1)
@@ -573,9 +578,8 @@ class LabourPaymentEntryTests(APITestCase):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.other = Project.objects.create(name='Other', code='OT')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
         self.rajesh = Labour.objects.create(name='Rajesh Kumar', mobile='9000000001')
         self.suresh = Labour.objects.create(name='Suresh', mobile='9000000002')
@@ -703,13 +707,11 @@ class LabourPaymentRulesTests(APITestCase):
     def setUp(self):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
         other_user = User.objects.create_user(username='own2', password='pass12345')
-        Profile.objects.create(user=other_user, role=Role.OWNER)
         self.other_owner = Owner.objects.create(user=other_user, name='Someone Else')
-        ProjectOwner.objects.create(project=self.project, owner=self.other_owner)  # same project, other person
+        grant(self.other_owner.user, 'OWNER', self.project)  # same project, other person
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
         self.active = Labour.objects.create(name='Suresh', mobile='9000000002')
         self.gone = Labour.objects.create(name='Rajesh Kumar', mobile='9000000001')
@@ -748,7 +750,6 @@ class LabourPaymentRulesTests(APITestCase):
 
     def test_admin_may_record_for_any_owner(self):
         admin = User.objects.create_superuser(username='adm', password='pass12345', email='a@a.com')
-        Profile.objects.create(user=admin, role=Role.ADMIN)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=admin).key)
         self.assertEqual(self.pay([{'labour': self.active.id, 'amount': '100'}], owner=self.other_owner).status_code, 201)
 
@@ -805,9 +806,8 @@ class AddLabourDuplicateTests(APITestCase):
     def setUp(self):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=owner)
+        grant(owner.user, 'OWNER', self.project)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
         self.rajesh = Labour.objects.create(name='Rajesh Kumar', mobile='98765 43210')
         self.legacy = Labour.objects.create(name='Vijay Singh', mobile='')
@@ -885,10 +885,9 @@ class ContractorFlowTests(APITestCase):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.other_project = Project.objects.create(name='Plot 200', code='P200')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
-        ProjectOwner.objects.create(project=self.other_project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
+        grant(self.owner.user, 'OWNER', self.other_project)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
         self.raj = Contractor.objects.create(name='Raj Construction', mobile='98765 43210')
 
@@ -966,7 +965,6 @@ class ContractorFlowTests(APITestCase):
 
     def test_manager_cannot_use_contractor_endpoint(self):
         mgr = User.objects.create_user(username='mgr', password='pass12345')
-        Profile.objects.create(user=mgr, role=Role.MANAGER)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=mgr).key)
         self.assertEqual(self.add_contractor().status_code, 403)
         self.assertEqual(self.client.get('/api/contractors/').status_code, 403)
@@ -1079,9 +1077,8 @@ class SupplierFlowTests(APITestCase):
     def setUp(self):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.user = User.objects.create_user(username='own', password='pass12345')
-        Profile.objects.create(user=self.user, role=Role.OWNER)
         self.owner = Owner.objects.create(user=self.user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
+        grant(self.owner.user, 'OWNER', self.project)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=self.user).key)
         self.sharma = Supplier.objects.create(name='Sharma Building Material', mobile='98765 43210')
 
@@ -1151,7 +1148,6 @@ class SupplierFlowTests(APITestCase):
 
     def test_manager_cannot_add_supplier(self):
         mgr = User.objects.create_user(username='mgr', password='pass12345')
-        Profile.objects.create(user=mgr, role=Role.MANAGER)
         self.client.credentials(HTTP_AUTHORIZATION='Token ' + Token.objects.create(user=mgr).key)
         self.assertEqual(self.add().status_code, 403)
 
@@ -1182,6 +1178,11 @@ class BackfillMigrationTests(TransactionTestCase):
     """Historical payments -> ProjectLabour rows, using the real 0001 -> 0002 migration."""
 
     def test_backfill_uses_payment_history_not_payment_age(self):
+        # Postgres' TestCase teardown (flush) needs the schema back at HEAD -- it TRUNCATEs every
+        # table, which fails on a table left FK-referenced mid-rollback (e.g. core_projectowner, on
+        # SQLite this was never an issue since its flush is far less strict about FK ordering).
+        from django.core.management import call_command
+        self.addCleanup(lambda: call_command('migrate', verbosity=0))
         executor = MigrationExecutor(connection)
         executor.migrate([('core', '0001_initial')])
         old = executor.loader.project_state([('core', '0001_initial')]).apps
@@ -1226,14 +1227,12 @@ class SupplierBillTests(APITestCase):
     def setUp(self):
         self.project = Project.objects.create(name='Plot 150', code='P150')
         self.other_project = Project.objects.create(name='Plot 9', code='P9')
-        self.owner_user = self.make_user('own', Role.OWNER)
+        self.owner_user = self.make_user('own', Role.OWNER, project=self.project)
         self.owner = Owner.objects.create(user=self.owner_user, name='Ramesh')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
         self.admin_user = self.make_user('adm', Role.ADMIN)
-        self.stranger = self.make_user('stranger', Role.OWNER)
-        stranger_owner = Owner.objects.create(user=self.stranger, name='Other')
-        ProjectOwner.objects.create(project=self.other_project, owner=stranger_owner)
-        self.manager_user = self.make_user('mgr', Role.MANAGER)
+        self.stranger = self.make_user('stranger', Role.OWNER, project=self.other_project)
+        Owner.objects.create(user=self.stranger, name='Other')
+        self.manager_user = self.make_user('mgr', Role.MANAGER)  # deliberately unassigned to any project
         self.supplier = Supplier.objects.create(name='Sharma', mobile='9876543210')
         self.txn = self.supplier_txn()
 
@@ -1246,9 +1245,11 @@ class SupplierBillTests(APITestCase):
         for p in patches.values():
             self.addCleanup(p.stop)
 
-    def make_user(self, name, role):
-        user = User.objects.create_user(username=name, password='pass12345')
-        Profile.objects.create(user=user, role=role)
+    def make_user(self, name, role, project=None):
+        user = User.objects.create_user(username=name, password='pass12345', is_superuser=(role == Role.ADMIN))
+        if project is not None and role != Role.ADMIN:
+            UserAccess.objects.create(
+                user=user, role=AccessRole.objects.get(name=role), project=project, scope_type=ScopeType.PROJECT)
         return user
 
     def login(self, user):
@@ -1322,15 +1323,25 @@ class SupplierBillTests(APITestCase):
         self.assertEqual(self.upload().status_code, 201)
         self.assertEqual(self.client.get(self.url()).status_code, 403)
 
-    def test_missing_row_falls_back_to_default(self):
+    def test_missing_row_is_fail_closed(self):
+        # RBAC v2: the role template (RolePermission) is the sole authority now -- there is no
+        # hardcoded Python-dict fallback for a missing row (the old PERMISSION_DEFAULTS). The 0007
+        # migration backfills a complete role x permission matrix precisely so this case doesn't
+        # arise in practice; deleting every row is deliberately fail-closed, not fail-open. With
+        # every row gone, canViewExpenses is also gone, so the transaction queryset itself excludes
+        # it (project-aware get_queryset, see views.ExpenseTransactionViewSet) -- 404, not 403, same
+        # "don't confirm it exists" convention as core/views.py's other project-scoped lookups.
         RolePermission.objects.all().delete()
         self.login(self.owner_user)
-        self.assertEqual(self.upload().status_code, 201)
+        self.assertEqual(self.upload().status_code, 404)
 
     def test_manager_and_anonymous_denied(self):
+        # RBAC v2: the manager here holds no UserAccess grant at all (on any project), so the
+        # RoleAllowed gate itself denies -- 403, not 404 (that's reserved for "not a member of this
+        # specific project"; this is "not eligible for this role anywhere").
         self.login(self.manager_user)
         self.assertEqual(self.upload().status_code, 403)
-        self.set_perm('MANAGER', 'canUploadBill', True)   # still blocked: managers have no expense API access
+        self.set_perm('MANAGER', 'canUploadBill', True)   # still blocked: no grant on any project
         self.assertEqual(self.upload().status_code, 403)
         self.client.credentials()
         self.assertEqual(self.upload().status_code, 401)

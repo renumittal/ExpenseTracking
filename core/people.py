@@ -1,9 +1,11 @@
 """
 Users, project members, passwords and the role-permission matrix.
 
-Nothing here has its own table: users are Django users with a Profile role, membership is the existing
-ProjectOwner / ProjectManager link, and permissions are the existing RolePermission rows. Every check is
-done on the server; the web app only shows or hides things.
+RBAC v2: membership is a `UserAccess` row (scope PROJECT, role OWNER/MANAGER); there is no
+`ProjectOwner`/`ProjectManager` table any more. `Owner`/`Manager` still hold real business data
+(name, mobile, salary) and are created here when a person is first given that role, but they no
+longer carry any access meaning themselves -- only `UserAccess` does. Every check is done on the
+server; the web app only shows or hides things.
 """
 
 import re
@@ -20,12 +22,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .access import services
 from .models import (
-    ExpenseTransaction, Manager, ManagerFund, Owner, Profile, Project, ProjectManager, ProjectOwner, Role,
-    RolePermission,
+    AccessRole, ExpenseTransaction, Manager, ManagerFund, Owner, Project, Role, RolePermission, ScopeType,
+    UserAccess,
 )
 from .permissions import (
-    CAN_MANAGE_PROJECT_MEMBERS, CAN_MANAGE_USERS, CAN_RESET_USER_PASSWORD, get_role, has_permission, is_admin,
+    CAN_MANAGE_PROJECT_MEMBERS, CAN_MANAGE_USERS, CAN_RESET_USER_PASSWORD, has_permission, is_admin,
     owns_project,
 )
 
@@ -45,10 +48,6 @@ def _display_name(user):
     return (owner.name if owner else manager.name if manager else user.get_full_name()) or user.get_username()
 
 
-def _user_role(user):
-    return 'ADMIN' if is_admin(user) else get_role(user)
-
-
 def can_reset_password(actor, target):
     """Whether `actor` may set a new password for `target` (the permission says the capability exists; this says who)."""
     if actor.id == target.id or not has_permission(actor, CAN_RESET_USER_PASSWORD):
@@ -57,11 +56,13 @@ def can_reset_password(actor, target):
         return actor.is_superuser
     if is_admin(actor):
         return True
-    # Anyone else: only a non-owner member of a project they own (never an admin).
-    if is_admin(target) or get_role(target) == Role.OWNER:
+    # Anyone else: only a non-owner member of a project the actor owns (never an admin).
+    if is_admin(target) or UserAccess.objects.filter(user=target, role__name='OWNER').exists():
         return False
-    return ProjectManager.objects.filter(
-        manager__user=target, project__project_owners__owner__user=actor).exists()
+    owned_projects = UserAccess.objects.filter(
+        user=actor, role__name='OWNER', scope_type=ScopeType.PROJECT).values_list('project_id', flat=True)
+    return UserAccess.objects.filter(
+        user=target, role__name='MANAGER', scope_type=ScopeType.PROJECT, project_id__in=owned_projects).exists()
 
 
 def _check_new_password(password, user):
@@ -117,8 +118,9 @@ class ResetPasswordView(APIView):
 class UserListView(APIView):
     """
     GET: every user with their role and project memberships (needs canManageUsers).
-    POST (super admin only): create a global account = Django User + Profile role + its Owner/Manager record.
-    It is not tied to any project; projects are assigned afterwards from each project's Members screen.
+    POST (super admin only): create a global account = Django User + UserAccess-free Owner/Manager
+    record. It is not tied to any project; projects are assigned afterwards from each project's
+    Members screen (or from Settings -> Access Control).
     """
 
     permission_classes = [IsAuthenticated]
@@ -128,18 +130,16 @@ class UserListView(APIView):
             return self._candidates(request)
         if not has_permission(request.user, CAN_MANAGE_USERS):
             raise PermissionDenied('You cannot manage users.')
-        users = list(User.objects.select_related('profile', 'owner_profile', 'manager_profile').order_by('username'))
+        users = list(User.objects.select_related('owner_profile', 'manager_profile').order_by('username'))
         projects = {}
-        for link in ProjectOwner.objects.select_related('owner'):
-            projects.setdefault(link.owner.user_id, []).append({'project_id': link.project_id, 'role': 'OWNER'})
-        for link in ProjectManager.objects.select_related('manager'):
-            projects.setdefault(link.manager.user_id, []).append({'project_id': link.project_id, 'role': 'MANAGER'})
+        for grant in UserAccess.objects.filter(scope_type=ScopeType.PROJECT).select_related('role'):
+            if grant.role.name in ('OWNER', 'MANAGER'):
+                projects.setdefault(grant.user_id, []).append({'project_id': grant.project_id, 'role': grant.role.name})
         return Response([{
-            'id': u.id, 'username': u.username, 'name': _display_name(u), 'role': _user_role(u),
+            'id': u.id, 'username': u.username, 'name': _display_name(u), 'role': services.display_role(u),
             'is_active': u.is_active, 'projects': projects.get(u.id, []),
             'can_reset': can_reset_password(request.user, u),
         } for u in users])
-
 
     def _candidates(self, request):
         """?project=<id>: existing users who could be added to that project (for its Add Member picker)."""
@@ -147,13 +147,13 @@ class UserListView(APIView):
             project = _members_project(request, int(request.query_params['project']))
         except ValueError:
             raise NotFound('Project not found.')
-        taken = set(ProjectOwner.objects.filter(project=project).values_list('owner__user_id', flat=True))
-        taken |= set(ProjectManager.objects.filter(project=project).values_list('manager__user_id', flat=True))
+        taken = set(UserAccess.objects.filter(project=project).values_list('user_id', flat=True))
         users = (User.objects.filter(is_active=True, is_superuser=False)
-                 .exclude(profile__role=Role.ADMIN).exclude(id__in=taken)
-                 .select_related('profile', 'owner_profile', 'manager_profile').order_by('username'))
+                 .exclude(id__in=UserAccess.objects.filter(role__is_superadmin=True).values('user_id'))
+                 .exclude(id__in=taken)
+                 .select_related('owner_profile', 'manager_profile').order_by('username'))
         return Response([{'id': u.id, 'username': u.username, 'email': u.email, 'name': _display_name(u),
-                          'role': get_role(u)} for u in users])
+                          'role': services.display_role(u)} for u in users])
 
     @transaction.atomic
     def post(self, request):
@@ -183,7 +183,6 @@ class UserListView(APIView):
         _check_new_password(d.get('password'), user)
         user.set_password(d.get('password'))
         user.save()
-        Profile.objects.create(user=user, role=role)
         model = Owner if role == Role.OWNER else Manager
         model.objects.create(user=user, name=name, mobile=mobile)
         return Response({'id': user.id}, status=status.HTTP_201_CREATED)
@@ -197,47 +196,37 @@ def _members_project(request, pk):
     project = Project.objects.filter(pk=pk).first()
     if project is None or not (is_admin(request.user) or owns_project(request.user, project)):
         raise NotFound('Project not found.')
-    if not has_permission(request.user, CAN_MANAGE_PROJECT_MEMBERS):
+    # Project-aware: respects a per-project override, not just "does this role ever get this".
+    if not services.has_perm(request.user, CAN_MANAGE_PROJECT_MEMBERS, project):
         raise PermissionDenied('You cannot manage project members.')
     return project
 
 
 def _member_rows(request, project):
-    rows = []
-    for link in ProjectOwner.objects.filter(project=project).select_related('owner__user'):
-        rows.append((link.owner.user, 'OWNER'))
-    for link in ProjectManager.objects.filter(project=project).select_related('manager__user'):
-        rows.append((link.manager.user, 'MANAGER'))
-    members = [{'id': u.id, 'username': u.username, 'name': _display_name(u), 'role': role,
-                'can_reset': can_reset_password(request.user, u)} for u, role in rows]
-    admins = User.objects.filter(Q(is_superuser=True) | Q(profile__role=Role.ADMIN)).distinct()
+    grants = (UserAccess.objects.filter(project=project, scope_type=ScopeType.PROJECT, role__name__in=('OWNER', 'MANAGER'))
+              .select_related('user', 'role'))
+    members = [{'id': g.user.id, 'username': g.user.username, 'name': _display_name(g.user), 'role': g.role.name,
+                'can_reset': can_reset_password(request.user, g.user)} for g in grants]
+    admins = User.objects.filter(
+        Q(is_superuser=True) | Q(id__in=UserAccess.objects.filter(role__is_superadmin=True).values('user_id'))
+    ).distinct()
     return {
         'members': sorted(members, key=lambda m: (m['name'].lower(), m['role'])),
         'admins': [{'id': u.id, 'username': u.username, 'name': _display_name(u)} for u in admins],
     }
 
 
-def _ensure_profile(user, role):
-    """Give `user` the Owner/Manager record `role` needs (and a Profile if they have none)."""
-    profile = getattr(user, 'profile', None)
-    if profile is None:
-        Profile.objects.create(user=user, role=role)
-    elif profile.role != role:
-        raise ValidationError({'role': f'This user is a {profile.role.title()} and cannot be added as {role.title()}.'})
-    if role == Role.OWNER:
+def _ensure_business_record(user, role_name):
+    """Give `user` the Owner/Manager master-data record `role_name` needs. A person may hold both
+    (OWNER on one project, MANAGER on another) -- there is no longer a "one role for life" rule."""
+    if role_name == Role.OWNER:
         return Owner.objects.get_or_create(user=user, defaults={'name': _display_name(user)})[0]
     return Manager.objects.get_or_create(user=user, defaults={'name': _display_name(user)})[0]
 
 
-def _link_for(project, user, role):
-    if role == Role.OWNER:
-        return ProjectOwner.objects.filter(project=project, owner__user=user).first()
-    return ProjectManager.objects.filter(project=project, manager__user=user).first()
-
-
-def _check_removable(project, user, role):
+def _check_removable(project, user, role_name):
     """A member with financial history on this project cannot be dropped: that would orphan the records."""
-    if role == Role.OWNER:
+    if role_name == Role.OWNER:
         used = (ExpenseTransaction.objects.filter(project=project, paid_by_owner__user=user).exists()
                 or ManagerFund.objects.filter(project=project, given_by_owner__user=user).exists())
     else:
@@ -258,10 +247,10 @@ class ProjectMembersView(APIView):
     def post(self, request, pk):
         project = _members_project(request, pk)
         who = (request.data.get('username') or '').strip()
-        role = request.data.get('role')
+        role_name = request.data.get('role')
         if not who:
             raise ValidationError({'username': 'Enter an email or username.'})
-        if role not in (Role.OWNER, Role.MANAGER):
+        if role_name not in (Role.OWNER, Role.MANAGER):
             raise ValidationError({'role': 'Role must be OWNER or MANAGER.'})
         matches = list(User.objects.filter(Q(username__iexact=who) | Q(email__iexact=who))[:2])
         if not matches:
@@ -271,13 +260,11 @@ class ProjectMembersView(APIView):
         user = matches[0]
         if is_admin(user):
             raise ValidationError({'username': 'This user is an admin and already has access to every project.'})
-        if _link_for(project, user, Role.OWNER) or _link_for(project, user, Role.MANAGER):
+        if UserAccess.objects.filter(project=project, user=user).exists():
             raise ValidationError({'username': 'This user is already a member of this project.'})
-        person = _ensure_profile(user, role)
-        if role == Role.OWNER:
-            ProjectOwner.objects.create(project=project, owner=person)
-        else:
-            ProjectManager.objects.create(project=project, manager=person)
+        _ensure_business_record(user, role_name)
+        access_role = AccessRole.objects.get(name=role_name)
+        UserAccess.objects.create(project=project, user=user, role=access_role, scope_type=ScopeType.PROJECT)
         return Response(_member_rows(request, project), status=status.HTTP_201_CREATED)
 
 
@@ -290,40 +277,32 @@ class ProjectMemberDetailView(APIView):
         project = _members_project(request, pk)
         if user_id == request.user.id:
             raise ValidationError('You cannot change or remove yourself.')
-        user = User.objects.filter(pk=user_id).first()
-        role = next((r for r in (Role.OWNER, Role.MANAGER) if user and _link_for(project, user, r)), None)
-        if role is None:
+        grant = UserAccess.objects.filter(
+            project=project, user_id=user_id, scope_type=ScopeType.PROJECT, role__name__in=('OWNER', 'MANAGER'),
+        ).select_related('user', 'role').first()
+        if grant is None:
             raise NotFound('This person is not a member of this project.')
-        return project, user, role
+        return project, grant
 
     @transaction.atomic
     def patch(self, request, pk, user_id):
-        project, user, role = self._member(request, pk, user_id)
+        project, grant = self._member(request, pk, user_id)
         new_role = request.data.get('role')
         if new_role not in (Role.OWNER, Role.MANAGER):
             raise ValidationError({'role': 'Role must be OWNER or MANAGER.'})
-        if new_role == role:
+        if new_role == grant.role.name:
             return Response(_member_rows(request, project))
-        # A person has one role in the whole system, so it can only change while this is their only project.
-        others = (ProjectOwner.objects.filter(owner__user=user).exclude(project=project).exists()
-                  or ProjectManager.objects.filter(manager__user=user).exclude(project=project).exists())
-        if others:
-            raise ValidationError('This person is on other projects with their current role, so it cannot be changed here.')
-        _check_removable(project, user, role)
-        _link_for(project, user, role).delete()
-        Profile.objects.filter(user=user).update(role=new_role)
-        person = _ensure_profile(user, new_role)
-        if new_role == Role.OWNER:
-            ProjectOwner.objects.create(project=project, owner=person)
-        else:
-            ProjectManager.objects.create(project=project, manager=person)
+        _check_removable(project, grant.user, grant.role.name)
+        _ensure_business_record(grant.user, new_role)
+        grant.role = AccessRole.objects.get(name=new_role)
+        grant.save(update_fields=['role', 'updated_at'])
         return Response(_member_rows(request, project))
 
     @transaction.atomic
     def delete(self, request, pk, user_id):
-        project, user, role = self._member(request, pk, user_id)
-        _check_removable(project, user, role)
-        _link_for(project, user, role).delete()
+        project, grant = self._member(request, pk, user_id)
+        _check_removable(project, grant.user, grant.role.name)
+        grant.delete()
         return Response(_member_rows(request, project))
 
 

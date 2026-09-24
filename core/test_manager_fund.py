@@ -13,6 +13,7 @@ from rest_framework.test import APITestCase
 
 from . import ledger
 from .models import (
+    AccessRole,
     ExpenseTransaction,
     Labour,
     Manager,
@@ -20,13 +21,12 @@ from .models import (
     ManagerLabourDistribution,
     Owner,
     PaymentMode,
-    Profile,
     Project,
     ProjectLabour,
-    ProjectManager,
-    ProjectOwner,
     Role,
     RolePermission,
+    ScopeType,
+    UserAccess,
     TransactionStatus,
 )
 
@@ -34,10 +34,18 @@ User = get_user_model()
 D = Decimal
 
 
+def grant(user, role_name, project):
+    """UserAccess is the only source of access truth now: a PROJECT-scoped role grant."""
+    return UserAccess.objects.create(
+        user=user, role=AccessRole.objects.get(name=role_name), project=project, scope_type=ScopeType.PROJECT,
+    )
+
+
 def make_person(username, role, project=None, name=None, owner=True):
     user = User.objects.create_user(username=username, password='pass12345')
-    Profile.objects.create(user=user, role=role)
     profile = Owner.objects.create(user=user, name=name or username) if owner else Manager.objects.create(user=user, name=name or username)
+    if project is not None:
+        grant(user, role, project)
     return user, profile
 
 
@@ -46,20 +54,15 @@ class LedgerBase(APITestCase):
         self.project = Project.objects.create(name='Project A', code='A')
         self.other_project = Project.objects.create(name='Project B', code='B')
 
-        self.owner_user, self.owner = make_person('owner_a', Role.OWNER, name='Owner A')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner)
-        self.owner2_user, self.owner2 = make_person('owner_a2', Role.OWNER, name='Owner A2')
-        ProjectOwner.objects.create(project=self.project, owner=self.owner2)
-        self.owner_b_user, self.owner_b = make_person('owner_b', Role.OWNER, name='Owner B')
-        ProjectOwner.objects.create(project=self.other_project, owner=self.owner_b)
+        self.owner_user, self.owner = make_person('owner_a', Role.OWNER, project=self.project, name='Owner A')
+        self.owner2_user, self.owner2 = make_person('owner_a2', Role.OWNER, project=self.project, name='Owner A2')
+        self.owner_b_user, self.owner_b = make_person('owner_b', Role.OWNER, project=self.other_project, name='Owner B')
 
-        self.manager_user, self.manager = make_person('manager_1', Role.MANAGER, name='Manager 1', owner=False)
-        ProjectManager.objects.create(project=self.project, manager=self.manager)
-        self.manager2_user, self.manager2 = make_person('manager_2', Role.MANAGER, name='Manager 2', owner=False)
-        ProjectManager.objects.create(project=self.project, manager=self.manager2)
+        self.manager_user, self.manager = make_person('manager_1', Role.MANAGER, project=self.project, name='Manager 1', owner=False)
+        self.manager2_user, self.manager2 = make_person('manager_2', Role.MANAGER, project=self.project, name='Manager 2', owner=False)
 
+        # is_superuser=True alone makes services.is_superadmin() true -- no UserAccess grant needed.
         self.admin_user = User.objects.create_user(username='admin1', password='pass12345', is_superuser=True, is_staff=True)
-        Profile.objects.create(user=self.admin_user, role=Role.ADMIN)
 
         self.labours = [Labour.objects.create(name=n) for n in ('Labour A', 'Labour B', 'Labour C', 'Labour D', 'Labour E')]
         for labour in self.labours:
@@ -398,17 +401,20 @@ class VisibilityAndAuthorizationTests(LedgerBase):
         self.assertEqual(self.position()['total_distributed'], D('35000'))
 
     def test_unassigned_manager_cannot_distribute(self):
+        # RBAC v2: a user with no UserAccess grant at all fails the RoleAllowed gate outright (403)
+        # rather than reaching serializer validation (400) -- "no role anywhere" is a permission
+        # question, not a data question.
         stray_user, stray = make_person('stray', Role.MANAGER, name='Stray', owner=False)
-        self.assertEqual(self.batch([(self.labours[1], 10)], manager=stray, user=stray_user).status_code, 400)
+        self.assertEqual(self.batch([(self.labours[1], 10)], manager=stray, user=stray_user).status_code, 403)
 
     def test_permission_matrix_can_switch_capabilities_off(self):
-        RolePermission.objects.create(role='MANAGER', permission='canDistributeManagerFund', allowed=False)
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canDistributeManagerFund', defaults={'allowed': False})
         self.assertEqual(self.batch([(self.labours[1], 10)]).status_code, 403)
-        RolePermission.objects.create(role='MANAGER', permission='canViewManagerFund', allowed=False)
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canViewManagerFund', defaults={'allowed': False})
         self.assertEqual(self.summary(self.manager_user).status_code, 403)
 
     def test_viewer_role_has_no_access_by_default(self):
-        RolePermission.objects.create(role='OWNER', permission='canViewManagerFund', allowed=False)
+        RolePermission.objects.update_or_create(role='OWNER', permission='canViewManagerFund', defaults={'allowed': False})
         self.assertEqual(self.summary(self.owner_user).status_code, 403)
 
 
@@ -459,9 +465,8 @@ class ProjectPeopleTests(LedgerBase):
         self.assertEqual(self.get(self.manager_user).status_code, 200)
 
     def test_people_from_another_project_are_never_shown(self):
-        ProjectManager.objects.create(project=self.other_project, manager=self.manager2)
-        other_user, other_manager = make_person('mgr_b', Role.MANAGER, name='Manager B', owner=False)
-        ProjectManager.objects.create(project=self.other_project, manager=other_manager)
+        grant(self.manager2_user, Role.MANAGER, self.other_project)
+        other_user, other_manager = make_person('mgr_b', Role.MANAGER, project=self.other_project, name='Manager B', owner=False)
         r = self.get(self.owner_user)
         self.assertNotIn('Manager B', str(r.data))
         self.assertEqual(self.get(self.owner_b_user, self.other_project).data['managers'][0]['name'], 'Manager 2')
@@ -479,7 +484,7 @@ class ProjectPeopleTests(LedgerBase):
         self.auth_as(self.owner_user)
         for method in ('post', 'put', 'patch', 'delete'):
             self.assertEqual(getattr(self.client, method)(f'/api/projects/{self.project.id}/people/', {}).status_code, 405, method)
-        self.assertEqual(ProjectOwner.objects.filter(project=self.project).count(), 2)
+        self.assertEqual(UserAccess.objects.filter(project=self.project, role__name='OWNER').count(), 2)
 
     def test_inactive_labour_is_flagged(self):
         ProjectLabour.objects.filter(project=self.project, labour=self.labours[0]).update(is_active=False)
@@ -524,7 +529,7 @@ class MeEffectivePermissionsTests(LedgerBase):
         self.assertEqual(len(d['project_permissions'][str(self.project.id)]), 5)
 
     def test_the_permission_matrix_changes_what_is_reported(self):
-        RolePermission.objects.create(role='MANAGER', permission='canDistributeManagerFund', allowed=False)
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canDistributeManagerFund', defaults={'allowed': False})
         d = self.me(self.manager_user)
         self.assertFalse(d['permissions']['canDistributeManagerFund'])
         self.assertEqual(d['project_permissions'][str(self.project.id)], ['canViewManagerFund'])
@@ -545,10 +550,8 @@ class ConcurrencyTests(TransactionTestCase):
 
     def test_two_simultaneous_distributions_cannot_spend_the_same_balance(self):
         project = Project.objects.create(name='P', code='P')
-        owner_user, owner = make_person('o', Role.OWNER)
-        ProjectOwner.objects.create(project=project, owner=owner)
-        mgr_user, manager = make_person('m', Role.MANAGER, owner=False)
-        ProjectManager.objects.create(project=project, manager=manager)
+        owner_user, owner = make_person('o', Role.OWNER, project=project)
+        mgr_user, manager = make_person('m', Role.MANAGER, project=project, owner=False)
         labours = [Labour.objects.create(name=f'L{i}') for i in range(6)]
         ManagerFund.objects.create(project=project, manager=manager, fund_date='2026-09-20', fund_amount='100000.00',
                                    given_by_owner=owner, payment_mode=PaymentMode.CASH)

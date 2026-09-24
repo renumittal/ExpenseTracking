@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 
+from .access import services
 from .models import (
     Contractor,
     ContractorContract,
@@ -17,7 +18,6 @@ from .models import (
     PaymentMode,
     Project,
     ProjectLabour,
-    ProjectManager,
     Supplier,
 )
 from .permissions import can_give_manager_fund, is_admin
@@ -269,7 +269,7 @@ class ManagerDistributionBatchSerializer(serializers.Serializer):
         return lines
 
     def validate(self, attrs):
-        if not ProjectManager.objects.filter(project=attrs['project'], manager=attrs['manager']).exists():
+        if not services.users_with_role(attrs['project'], 'MANAGER').filter(pk=attrs['manager'].user_id).exists():
             raise serializers.ValidationError({'manager': 'This manager is not assigned to this project.'})
         labours = [line['labour'] for line in attrs['payments']]
         links = {l.labour_id: l for l in ProjectLabour.objects.filter(project=attrs['project'], labour__in=labours)}
