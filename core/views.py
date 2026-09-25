@@ -44,11 +44,17 @@ from .permissions import (
     CAN_ADD_SUPPLIER_EXPENSE,
     CAN_DELETE_EXPENSE,
     CAN_EDIT_EXPENSE,
+    CAN_MANAGE_CONTRACTORS,
+    CAN_MANAGE_LABOUR,
+    CAN_MANAGE_SUPPLIERS,
     CAN_RECORD_LABOUR_PAYMENT,
     CAN_UPLOAD_BILL,
     CAN_VIEW_BILL,
+    CAN_VIEW_CONTRACTORS,
     CAN_VIEW_EXPENSES,
+    CAN_VIEW_LABOUR,
     CAN_VIEW_PROJECTS,
+    CAN_VIEW_SUPPLIERS,
     RoleAllowed,
     can_cancel_distribution,
     can_distribute_manager_fund,
@@ -685,11 +691,16 @@ class ManagerSummaryView(APIView):
 # ---------------------------------------------------------------------------
 
 class SupplierViewSet(viewsets.ModelViewSet):
-    """List + add only (owners can add a new supplier by name while entering an expense)."""
+    """
+    List: Owner/Manager (canViewSuppliers is on for both by default -- a manager needs the list to
+    pick a supplier while entering an expense). Add: Owner only (canManageSuppliers), checked inside
+    add() itself since it's a project-less action a coarse role gate alone can't scope correctly --
+    the frontend already hides the "Add Supplier" button from anyone without canManageSuppliers.
+    """
 
     serializer_class = SupplierSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
     queryset = Supplier.objects.all()
     http_method_names = ['get', 'post', 'head', 'options']
 
@@ -702,6 +713,8 @@ class SupplierViewSet(viewsets.ModelViewSet):
         needs {use_supplier: <id>} or {confirm_new: true}. A supplier has no contract:
         every purchase is its own ExpenseTransaction.
         """
+        if not is_admin(request.user) and not has_permission(request.user, CAN_MANAGE_SUPPLIERS):
+            raise PermissionDenied('You are not authorized to add a supplier.')
         ser = NewSupplierSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data
@@ -756,13 +769,14 @@ class SupplierViewSet(viewsets.ModelViewSet):
 
 class LabourViewSet(viewsets.ModelViewSet):
     """
-    Labour master. Owners may list; only ADMIN may add here. Owners add labour for a
-    project through project-labour/ (which de-duplicates and links the project).
+    Labour master. Owner/Manager/Viewer may list (canViewLabour is on for everyone by default);
+    only ADMIN may add here. Owners/Managers add labour for a project through project-labour/
+    (which de-duplicates and links the project).
     """
 
     serializer_class = LabourSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
     queryset = Labour.objects.all()
     http_method_names = ['get', 'post', 'head', 'options']
 
@@ -797,8 +811,9 @@ def _candidate(labour):
 
 
 def _require_project_access(user, project):
-    """Same rule as expense entry: admin, or a real OWNER-role assignment on the project."""
-    if not is_admin(user) and not services.users_with_role(project, 'OWNER').filter(pk=user.id).exists():
+    """Adding a labourer to a project is gated the same as recording labour: canManageLabour on
+    that project (project-aware -- respects a per-project override), admin always allowed."""
+    if not is_admin(user) and not services.has_perm(user, CAN_MANAGE_LABOUR, project):
         raise PermissionDenied('You are not authorized on this project.')
 
 
@@ -816,14 +831,17 @@ class ProjectLabourViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     serializer_class = ProjectLabourSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
     pagination_class = None
 
     def get_queryset(self):
         user = self.request.user
         qs = annotate_last_paid(ProjectLabour.objects.select_related('labour'))
         if not is_admin(user):
-            qs = qs.filter(project__in=services.projects_with_role(user, 'OWNER'))
+            # Project-aware: every project this user can view labour on -- not just the ones they
+            # own -- so a manager filling in the Labour step of Add Expense can see the roster.
+            ids = [p.id for p in services.accessible_projects(user) if services.has_perm(user, CAN_VIEW_LABOUR, p)]
+            qs = qs.filter(project_id__in=ids)
         params = self.request.query_params
         if params.get('project'):
             qs = qs.filter(project_id=params['project'])
@@ -945,16 +963,26 @@ class LabourPaymentViewSet(viewsets.GenericViewSet):
 
 
 class ContractorContractViewSet(viewsets.ModelViewSet):
+    """
+    List: Owner/Manager (canViewContractors is on for both by default -- a manager needs this to
+    pick a contract while recording a contractor payment). Creating a brand-new contract is left
+    Owner-only in perform_create -- a financial commitment, same as the frontend, which hides the
+    "Add Contractor" button from anyone without canManageContractors.
+    """
+
     serializer_class = ContractorContractSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
 
     def get_queryset(self):
         user = self.request.user
         if is_admin(user):
             qs = ContractorContract.objects.all()
         else:
-            qs = ContractorContract.objects.filter(project__in=services.projects_with_role(user, 'OWNER'))
+            # Project-aware: every project this user can view contractors on, not just the ones
+            # they own.
+            ids = [p.id for p in services.accessible_projects(user) if services.has_perm(user, CAN_VIEW_CONTRACTORS, p)]
+            qs = ContractorContract.objects.filter(project_id__in=ids)
         if self.request.query_params.get('project'):
             qs = qs.filter(project_id=self.request.query_params['project'])
         return qs.select_related('contractor').order_by('id')
@@ -962,10 +990,8 @@ class ContractorContractViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         project = serializer.validated_data['project']
-        if not is_admin(user):
-            owned = services.users_with_role(project, 'OWNER').filter(pk=user.id).exists()
-            if not owned:
-                raise PermissionDenied('You are not authorized on this project.')
+        if not is_admin(user) and not services.has_perm(user, CAN_MANAGE_CONTRACTORS, project):
+            raise PermissionDenied('You are not authorized on this project.')
         serializer.save()
 
 
@@ -993,11 +1019,13 @@ class ContractorViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
 
     serializer_class = ContractorSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER}
     queryset = Contractor.objects.order_by('name', 'id')
     pagination_class = None
 
     def create(self, request):
+        if not is_admin(request.user) and not has_permission(request.user, CAN_MANAGE_CONTRACTORS):
+            raise PermissionDenied('You are not authorized to add a contractor.')
         ser = NewContractorSerializer(data=request.data)
         ser.is_valid(raise_exception=True)
         data = ser.validated_data

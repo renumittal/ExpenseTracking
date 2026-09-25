@@ -88,16 +88,36 @@ class RoleBasedAccessTests(APITestCase):
         token, _ = Token.objects.get_or_create(user=user)
         self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
 
-    # -- Manager: cannot touch supplier / contractor endpoints ------------
+    # -- Manager: can list (but not create) suppliers / contractor contracts --
+    # canViewSuppliers/canViewContractors default ON for MANAGER (they need to pick an existing
+    # supplier/contract while recording a payment in Add Expense) -- only canManageSuppliers/
+    # canManageContractors (creating a brand-new one) stays Owner-only, enforced inside the create
+    # actions themselves; see test_manager_cannot_create_supplier/contractor below.
 
-    def test_manager_cannot_access_supplier_endpoint(self):
+    def test_manager_can_list_suppliers(self):
         self.auth_as(self.manager_user)
         response = self.client.get('/api/suppliers/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('Cement Co', [row['name'] for row in response.data])
+
+    def test_manager_cannot_create_supplier(self):
+        self.auth_as(self.manager_user)
+        response = self.client.post('/api/suppliers/add/', {'name': 'New Supplier', 'mobile': '9000000009'})
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
-    def test_manager_cannot_access_contractor_contract_endpoint(self):
+    def test_manager_can_list_contractor_contracts_on_own_project(self):
         self.auth_as(self.manager_user)
         response = self.client.get('/api/contractor-contracts/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data, [])   # reachable; simply none exist on project_a yet
+
+    def test_manager_cannot_create_contractor_contract(self):
+        self.auth_as(self.manager_user)
+        contractor = Contractor.objects.create(name='Some Contractor')
+        response = self.client.post('/api/contractor-contracts/', {
+            'project': self.project_a.id, 'contractor': contractor.id, 'work_description': 'RCC',
+            'contract_amount': '1000.00', 'contract_date': '2026-01-01',
+        })
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
     def test_manager_sees_no_expenses_without_view_permission(self):

@@ -581,6 +581,65 @@ class SeedRbacDemoTests(APITestCase):
             category = self.client.get('/api/reports/category-expense/', {'project': project.id})
             self.assertEqual(category.status_code, 200, project.code)
 
+    def test_manoj_can_load_and_use_the_add_expense_form(self):
+        """
+        The Add Expense screen's data load (web/app.js loadNames()) fetches labour/, suppliers/ and
+        contractor-contracts/ *before* the user even picks a category -- if a manager can't list any
+        one of those, the whole screen fails to render (an error, no form at all), even though he can
+        add every category of expense once the form is up. LabourViewSet/SupplierViewSet/
+        ContractorContractViewSet were still gated OWNER-only from before per-category Add Expense
+        permissions existed for MANAGER, so this reproduces exactly that: reachable Dashboard/Reports/
+        List (fixed earlier) but a still-broken Add Expense screen.
+        """
+        from .models import Contractor, ContractorContract, Owner, PaymentMode, Supplier
+
+        site_a = Project.objects.get(code='SITE-A')
+        parveen_owner = Owner.objects.get(user__username='parveen')
+        supplier = Supplier.objects.create(name='Demo Cement Co', mobile='9000000001')
+        contractor = Contractor.objects.create(name='Demo Build Co', mobile='9000000002')
+        contract = ContractorContract.objects.create(
+            project=site_a, contractor=contractor, work_description='RCC', contract_amount='50000.00',
+            contract_date='2026-01-01',
+        )
+        self._login('manoj')
+
+        # Every call loadNames() makes in parallel before the form renders.
+        self.assertEqual(self.client.get('/api/labour/').status_code, 200)
+        self.assertEqual(self.client.get('/api/suppliers/').status_code, 200)
+        contracts = self.client.get('/api/contractor-contracts/', {'project': site_a.id})
+        self.assertEqual(contracts.status_code, 200)
+        self.assertIn(contract.id, {c['id'] for c in contracts.data})
+        self.assertEqual(self.client.get(f'/api/projects/{site_a.id}/people/').status_code, 200)
+
+        # A manager may add a new labourer while recording their payment (canManageLabour)...
+        added_labour = self.client.post('/api/project-labour/', {
+            'project': site_a.id, 'name': 'New Labourer', 'mobile': '9000000003',
+        })
+        self.assertEqual(added_labour.status_code, 201, added_labour.data)
+
+        # ...but not a new supplier or contractor (canManageSuppliers/canManageContractors are
+        # Owner-only by default, and the frontend hides those buttons from a manager for this reason).
+        self.assertEqual(self.client.post('/api/suppliers/add/', {
+            'name': 'New Supplier', 'mobile': '9000000004',
+        }).status_code, 403)
+        self.assertEqual(self.client.post('/api/contractors/', {
+            'name': 'New Contractor', 'mobile': '9000000005',
+        }).status_code, 403)
+
+        # Recording an expense against the *existing* supplier/contract he can see is allowed.
+        for body in (
+            {'expense_category': 'SUPPLIER', 'expense_type': 'Supplier Payment', 'party_type': 'SUPPLIER',
+             'supplier': supplier.id, 'description': 'Cement'},
+            {'expense_category': 'CONTRACTOR', 'expense_type': 'Contractor Payment', 'party_type': 'CONTRACTOR',
+             'contractor_contract': contract.id},
+        ):
+            body.update({
+                'project': site_a.id, 'expense_date': '2026-01-10', 'paid_by_owner': parveen_owner.id,
+                'amount': '250.00', 'payment_mode': PaymentMode.CASH,
+            })
+            r = self.client.post('/api/expense-transactions/', body, format='json')
+            self.assertEqual(r.status_code, 201, (body['expense_category'], r.data))
+
     def test_only_renu_sees_access_control(self):
         renu = self._login('renu')
         parveen = User.objects.get(username='parveen')
