@@ -39,6 +39,7 @@
     { key: 'canViewSuppliers',     group: 'view', label: 'View Suppliers',   roles: OWN },
     { key: 'canViewContractors',   group: 'view', label: 'View Contractors', roles: OWN },
     { key: 'canViewManagerFund',   group: 'view', label: 'View Manager Fund', roles: OPS },
+    { key: 'canViewProjectFunds',  group: 'view', label: "View All Managers' Funds", roles: OWN },
 
     { key: 'canAddSupplierExpense',  group: 'ops', label: 'Add Supplier Payment',   roles: OPS },
     { key: 'canAddContractorExpense', group: 'ops', label: 'Add Contractor Payment', roles: OPS },

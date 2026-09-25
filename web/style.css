@@ -413,4 +413,32 @@ body.typing main { padding-bottom: 24px; }
   .home-grid .btn { min-height: 140px; flex-direction: column; margin: 0; }
   .tabs { left: 50%; right: auto; width: 720px; transform: translateX(-50%); border-radius: 16px 16px 0 0; border: 2px solid var(--line); border-bottom: 0; }
 }
+
+/* ---------------- Manager Dashboard mobile refinements (.md-*): scoped to the dashboard's own
+   markup (web/app.js screenManagerDashboard/projectPickerSheet) and the Expense List's day groups
+   (.list-day) -- does not change any other screen's layout. ---------------- */
+.tot-box.bad { border-color: var(--red); background: var(--red-soft); }
+.tot-box.bad .big-total { color: var(--red); }
+.md-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.md-badge { border: 0; cursor: pointer; font: inherit; font-size: .85rem; }
+/* Fund cards: always 3 across, never stack, even on a narrow phone. */
+.md-fund-cards.tot-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.md-fund-cards .tot-box { padding: 10px; }
+.md-fund-cards .tot-box .muted { font-size: 13px; }
+.md-fund-cards .tot-box .big-total { font-size: clamp(14px, 4.4vw, 18px); font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Category cards: 2 per row. */
+.md-cat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.md-cat-grid .card.item { margin: 0; }
+/* Date-grouped Expense List rows. */
+.list-day { margin: 14px 0 0; }
+.list-day-head { font-weight: 800; color: var(--blue); margin-bottom: 4px; }
+@media (min-width: 720px) { .md-fund-cards.tot-grid, .md-cat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+
+@media (max-width: 480px) {
+  /* Never let a long name/date push the amount off-screen: the row itself already flexes
+     (see .row above), this just lets its first child shrink and truncate instead of wrapping. */
+  .row > *:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row > .amount, .row .amount { flex: 0 0 auto; white-space: nowrap; }
+  .fund-row .c-name, .card.pick .row b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
 @media (prefers-reduced-motion: reduce) { .btn:active { transform: none; } }

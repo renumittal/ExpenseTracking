@@ -85,6 +85,12 @@ def can_distribute_manager_fund(user, project, manager):
     return manager.user_id == user.id and services.users_with_role(project, 'MANAGER').filter(pk=user.id).exists()
 
 
+def can_view_project_funds(user, project):
+    """Owner-level: may look at ANOTHER manager's fund position on this project (Manager Dashboard's
+    manager_id query param), not just their own. Same shape as can_give_manager_fund."""
+    return services.has_perm(user, CAN_VIEW_PROJECT_FUNDS, project) and owns_project(user, project)
+
+
 def can_cancel_distribution(user, project):
     """Reversing a distribution is an owner-level action (same permission as giving a fund), checked
     against the distribution's own project."""
@@ -102,6 +108,7 @@ CAN_VIEW_BILL = 'canViewBill'
 CAN_VIEW_MANAGER_FUND = 'canViewManagerFund'
 CAN_GIVE_MANAGER_FUND = 'canGiveManagerFund'
 CAN_DISTRIBUTE_MANAGER_FUND = 'canDistributeManagerFund'
+CAN_VIEW_PROJECT_FUNDS = 'canViewProjectFunds'
 CAN_VIEW_PROJECTS = 'canViewProjects'
 CAN_VIEW_EXPENSES = 'canViewExpenses'
 CAN_VIEW_REPORTS = 'canViewReports'
@@ -152,6 +159,7 @@ PROJECT_RULES = {
     CAN_DISTRIBUTE_MANAGER_FUND: manages_project,
     CAN_UPLOAD_BILL: owns_project,
     CAN_VIEW_BILL: owns_project,
+    CAN_VIEW_PROJECT_FUNDS: owns_project,
 }
 
 

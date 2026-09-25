@@ -4,6 +4,7 @@ import uuid
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db import transaction
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from django.db.models import F, Max, Q, Sum
 from rest_framework import mixins, status, viewsets
@@ -60,6 +61,7 @@ from .permissions import (
     can_distribute_manager_fund,
     can_give_manager_fund,
     can_view_manager_fund,
+    can_view_project_funds,
     effective_permissions,
     has_permission,
     is_admin,
@@ -418,19 +420,30 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
     @action(detail=True, methods=['get'], url_path='manager-summary')
     def manager_summary(self, request, pk=None):
         """
-        Manager Dashboard summary card data for the requesting user on this project:
+        Manager Dashboard summary card data for the requesting user on this project (or, with
+        ?manager_id=, for another manager -- an owner/admin capability gated by canViewProjectFunds):
         fund received / total distributed (see ledger.position -- labour distributions + Other
-        expenses they recorded) / balance, plus a per-category total of what THEY recorded, limited
-        to the categories they are actually permitted to add/view (server-authoritative).
+        expenses they recorded) / balance, plus a per-category total of what they recorded, the
+        categories they may create/view (server-authoritative), and their position on every project
+        they hold a fund on (for the multi-project picker).
         """
         project = self._project_or_404(pk)
         user = request.user
         self._require_project_access(user, project)
 
-        allowed = _allowed_categories(user, project)
-        manager = getattr(user, 'manager_profile', None)
-        if manager is not None:
-            pos = ledger.position(project, manager)
+        manager_id = request.query_params.get('manager_id')
+        subject_user, subject_manager = user, getattr(user, 'manager_profile', None)
+        if manager_id:
+            if not (is_admin(user) or can_view_project_funds(user, project)):
+                raise PermissionDenied("You do not have permission to view another manager's fund position.")
+            subject_manager = get_object_or_404(Manager, pk=manager_id)
+            subject_user = subject_manager.user
+
+        allowed_create = _allowed_categories(subject_user, project)
+        allowed_view = _viewable_categories(subject_user, project)
+
+        if subject_manager is not None:
+            pos = ledger.position(project, subject_manager)
             fund_received = pos['total_received']
             total_distributed = pos['total_distributed']
             balance = pos['available_balance']
@@ -438,49 +451,74 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
             fund_received = total_distributed = balance = ZERO
 
         category_totals = {}
-        for cat in allowed:
+        for cat in allowed_create:
             total = ExpenseTransaction.objects.filter(
-                project=project, expense_category=cat, status=TransactionStatus.ACTIVE, created_by=user,
+                project=project, expense_category=cat, status=TransactionStatus.ACTIVE, created_by=subject_user,
             ).aggregate(t=Sum('amount'))['t'] or ZERO
             category_totals[cat.lower()] = total
+
+        projects_summary, total_balance = [], ZERO
+        if subject_manager is not None:
+            project_ids = ManagerFund.objects.filter(manager=subject_manager).values_list('project_id', flat=True).distinct()
+            for p in Project.objects.filter(id__in=project_ids).order_by('code'):
+                pos_p = ledger.position(p, subject_manager)
+                projects_summary.append({
+                    'id': p.id, 'name': p.name,
+                    'received': pos_p['total_received'], 'distributed': pos_p['total_distributed'],
+                    'balance': pos_p['available_balance'],
+                })
+            total_balance = ledger.manager_total_balance(subject_manager)
 
         return Response({
             'fund_received': fund_received,
             'total_distributed': total_distributed,
             'balance': balance,
             'category_totals': category_totals,
-            'allowed_categories': [c.lower() for c in allowed],
+            'allowed_categories': {'create': [c.lower() for c in allowed_create], 'view': [c.lower() for c in allowed_view]},
+            'projects': projects_summary,
+            'total_balance': total_balance,
         })
 
     @action(detail=True, methods=['get'], url_path='transactions')
     def transactions(self, request, pk=None):
         """
-        GET .../transactions/?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1
+        GET .../transactions/?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1[&manager_id=][&category=]
         -> {in_total, out_total, count, results, next}
 
-        "In" = ManagerFund the requesting user received on this project (fund received from an
-        owner); "Out" = ACTIVE ExpenseTransaction rows the requesting user recorded, limited to
-        categories they're permitted for. Default range (no from/to) = the current calendar month.
-        Paginated 20/page across the combined, date-desc sorted list.
+        "In" = ManagerFund the requesting user (or, with ?manager_id=, another manager -- gated by
+        canViewProjectFunds) received on this project; "Out" = ACTIVE ExpenseTransaction rows they
+        recorded, limited to categories they're permitted for and, if given, to ?category=. Default
+        range (no from/to) = the current calendar month. Paginated 20/page, date-desc sorted.
         """
         project = self._project_or_404(pk)
         user = request.user
         self._require_project_access(user, project)
 
+        manager_id = request.query_params.get('manager_id')
+        subject_user, subject_manager = user, getattr(user, 'manager_profile', None)
+        if manager_id:
+            if not (is_admin(user) or can_view_project_funds(user, project)):
+                raise PermissionDenied("You do not have permission to view another manager's transactions.")
+            subject_manager = get_object_or_404(Manager, pk=manager_id)
+            subject_user = subject_manager.user
+
         today = timezone.localdate()
         date_from = request.query_params.get('from') or today.replace(day=1).isoformat()
         date_to = request.query_params.get('to') or today.isoformat()
 
-        allowed = _allowed_categories(user, project)
-        manager = getattr(user, 'manager_profile', None)
+        allowed = _allowed_categories(subject_user, project)
+        category = (request.query_params.get('category') or '').upper()
+        if category:
+            allowed = [c for c in allowed if c == category]
 
         in_qs = ManagerFund.objects.none()
-        if manager is not None:
+        if subject_manager is not None and not category:
             in_qs = ManagerFund.objects.filter(
-                project=project, manager=manager, fund_date__gte=date_from, fund_date__lte=date_to,
+                project=project, manager=subject_manager, status=TransactionStatus.ACTIVE,
+                fund_date__gte=date_from, fund_date__lte=date_to,
             )
         out_qs = ExpenseTransaction.objects.filter(
-            project=project, created_by=user, status=TransactionStatus.ACTIVE,
+            project=project, created_by=subject_user, status=TransactionStatus.ACTIVE,
             expense_category__in=allowed, expense_date__gte=date_from, expense_date__lte=date_to,
         )
 

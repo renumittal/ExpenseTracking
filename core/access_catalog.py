@@ -38,6 +38,8 @@ PERMISSIONS = {
                             'Can see the contractor list and their contracts.'),
     'canViewManagerFund': ('MANAGER_FUND', 'VIEW', 'view', 'View Manager Fund',
                             'Can see how much fund a manager has been given and spent.'),
+    'canViewProjectFunds': ('MANAGER_FUND', 'VIEW_ALL', 'view', "View All Managers' Funds",
+                             "Can see every manager's fund position on a project, not just their own."),
     'canViewBill': ('BILL', 'VIEW', 'view', 'View Bill',
                      'Can open an uploaded supplier bill.'),
 
@@ -136,6 +138,7 @@ def build_dependencies():
     deps.setdefault('canAddSupplierExpense', set()).update({'canViewSuppliers'})
     deps.setdefault('canAddContractorExpense', set()).update({'canViewContractors'})
     deps.setdefault('canEditExpense', set()).update({'canViewSuppliers', 'canViewContractors'})
+    deps.setdefault('canViewProjectFunds', set()).update({'canViewManagerFund'})
     return deps
 
 
@@ -164,6 +167,7 @@ RESET_DEFAULTS = {
     'canUploadBill': {'OWNER': True, 'MANAGER': False, 'VIEWER': False},
     'canViewBill': {'OWNER': True, 'MANAGER': False, 'VIEWER': False},
     'canViewManagerFund': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
+    'canViewProjectFunds': {'OWNER': True, 'MANAGER': False, 'VIEWER': False},
     'canGiveManagerFund': {'OWNER': True, 'MANAGER': False, 'VIEWER': False},
     'canDistributeManagerFund': {'OWNER': False, 'MANAGER': True, 'VIEWER': False},
     'canEditExpense': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},

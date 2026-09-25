@@ -87,19 +87,20 @@ class ManagerSummaryEndpointTests(LedgerBase):
         r = self.summary(self.manager_user)
         self.assertEqual(r.status_code, 200)
         self.assertEqual(
-            set(r.data['allowed_categories']), {'labour', 'contractor', 'supplier', 'miscellaneous'},
+            set(r.data['allowed_categories']['create']), {'labour', 'contractor', 'supplier', 'miscellaneous'},
         )
         self.assertIn('labour', r.data['category_totals'])
         self.assertIn('supplier', r.data['category_totals'])
 
-        # Turn off supplier for MANAGER role-wide: it must disappear from both lists.
+        # Turn off supplier for MANAGER role-wide: it must disappear from create (create needs it
+        # off), but supplier VIEW stays on by default so it remains in category_totals/view.
         RolePermission.objects.update_or_create(role='MANAGER', permission='canAddSupplierExpense', defaults={'allowed': False})
         r2 = self.summary(self.manager_user)
         self.assertEqual(r2.status_code, 200)
-        self.assertNotIn('supplier', r2.data['allowed_categories'])
+        self.assertNotIn('supplier', r2.data['allowed_categories']['create'])
         self.assertNotIn('supplier', r2.data['category_totals'])
         # Untouched categories remain.
-        self.assertIn('labour', r2.data['allowed_categories'])
+        self.assertIn('labour', r2.data['allowed_categories']['create'])
 
     def test_category_total_counts_only_this_managers_own_entries(self):
         self.auth_as(self.manager2_user)
@@ -119,6 +120,25 @@ class ManagerSummaryEndpointTests(LedgerBase):
     def test_admin_can_view_any_project_summary(self):
         r = self.summary(self.admin_user)
         self.assertEqual(r.status_code, 200)
+
+    def test_manager_id_param_403_without_view_project_funds_permission(self):
+        self.auth_as(self.owner_user)
+        RolePermission.objects.update_or_create(role='OWNER', permission='canViewProjectFunds', defaults={'allowed': False})
+        r = self.client.get(f'/api/projects/{self.project.id}/manager-summary/?manager_id={self.manager2.id}')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_manager_id_param_allowed_with_view_project_funds_permission(self):
+        self.give('5000.00', '2026-09-01', manager=self.manager2)
+        self.auth_as(self.owner_user)   # OWNER has canViewProjectFunds by default
+        r = self.client.get(f'/api/projects/{self.project.id}/manager-summary/?manager_id={self.manager2.id}')
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['fund_received']), D('5000.00'))
+
+    def test_category_without_create_permission_absent_from_allowed_categories_create(self):
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canAddContractorExpense', defaults={'allowed': False})
+        r = self.summary(self.manager_user)
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn('contractor', r.data['allowed_categories']['create'])
 
 
 class TransactionsEndpointTests(LedgerBase):
@@ -165,6 +185,20 @@ class TransactionsEndpointTests(LedgerBase):
     def test_403_when_no_project_access(self):
         r = self.transactions(self.owner_b_user)
         self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_category_filter_limits_out_rows_and_excludes_fund_in_rows(self):
+        self.batch([(self.labours[0], D('3000'))], date='2026-09-10')
+        self.auth_as(self.manager_user)
+        self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-12', 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Tea stall',
+            'paid_by_owner': self.owner.id, 'amount': '250.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+        r = self.transactions(self.manager_user, **{'from': '2026-09-01', 'to': '2026-09-30', 'category': 'LABOUR'})
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['in_total']), D('0.00'))                        # fund rows excluded once category is set
+        categories = {row['category'] for row in r.data['results']}
+        self.assertEqual(categories, {'labour'})
 
     def test_only_permitted_categories_appear_in_out_transactions(self):
         self.auth_as(self.manager_user)

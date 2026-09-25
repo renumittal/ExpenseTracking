@@ -466,6 +466,35 @@
     return mdMonthRange();
   }
 
+  // Bottom sheet: "Total balance with you (N projects)" + one row per project, tap to switch.
+  // Reuses the same .modal/.modal-box pop-up pattern as confirmBox() elsewhere in this file.
+  function projectPickerSheet(summary) {
+    const box = document.createElement('div');
+    box.className = 'modal';
+    box.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-label="${L('प्रोजेक्ट चुनिए', 'Choose a project')}">
+      <h2 style="margin-top:0">${L('आपके पास कुल बैलेंस', 'Total balance with you')} (${summary.projects.length} ${L('प्रोजेक्ट', 'projects')})</h2>
+      <div class="card tot-box ${Number(summary.total_balance) < 0 ? 'bad' : 'ok'}"><div class="big-total">${money(summary.total_balance)}</div></div>` +
+      summary.projects.map(p => `
+        <button type="button" class="card pick ${p.id === state.project.id ? 'on' : ''}" data-id="${p.id}">
+          <div class="row"><b>${esc(p.name)}</b>${p.id === state.project.id ? '<span class="pill">✔</span>' : ''}</div>
+          <div class="meta">${L('मिला', 'Received')} ${money(p.received)} · ${L('बाँटा', 'Distributed')} ${money(p.distributed)}</div>
+          <div class="row"><span class="muted">${L('बचा हुआ', 'Balance')}</span><span class="amount">${money(p.balance)}</span></div>
+        </button>`).join('') +
+      `<button class="btn line" type="button" id="pp-close">${L('बंद करें', 'Close')}</button></div>`;
+    document.body.appendChild(box);
+    const close = () => { box.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('hashchange', close);
+    box.querySelector('#pp-close').onclick = close;
+    box.querySelectorAll('button.pick').forEach(b => b.onclick = () => {
+      const p = state.projects.find(x => x.id === Number(b.dataset.id));
+      if (p) { state.project = p; store.set('projectId', p.id); state.names = null; }
+      close();
+      route();
+    });
+  }
+
   async function screenManagerDashboard() {
     chrome('home');
     const project = state.project;
@@ -474,7 +503,12 @@
     try { summary = await api(`projects/${project.id}/manager-summary/`); }
     catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
 
-    const cards = DASH_CATS.map(k => CAT[k]).filter(c => (summary.allowed_categories || []).includes(c.key.toLowerCase()));
+    const allowedCreate = (summary.allowed_categories && summary.allowed_categories.create) || [];
+    const allowedView = (summary.allowed_categories && summary.allowed_categories.view) || [];
+    const cards = DASH_CATS.map(k => CAT[k]).filter(c => allowedView.includes(c.key.toLowerCase()));
+    const cardHref = c => allowedCreate.includes(c.key.toLowerCase())
+      ? `#/add?tab=${CAT_TO_TAB[c.key]}` : `#/list?cat=${c.key}`;
+    const many = (summary.projects || []).length > 1;
 
     async function loadTxns(reset) {
       if (reset) { mdPage = 1; mdResults = []; }
@@ -491,17 +525,17 @@
       const { from, to } = mdComputeDates();
       const bal = Number(summary.balance);
       $view.innerHTML = `
-        <h1>👤 ${I18n.t('managerDashboard')}: ${esc(state.user.name)}</h1>
-        <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(project.name)}</b></p>
-        <div class="tot-grid">
+        <h1 class="md-title">🏗️ ${esc(project.name)}${many ? `<button type="button" class="pill md-badge" id="md-projects">${state.projects.findIndex(p => p.id === project.id) + 1} ${L('में से', 'of')} ${summary.projects.length}</button>` : ''}</h1>
+        <p class="muted">👤 ${L('मैनेजर', 'Manager')}: <b>${esc(state.user.name)}</b></p>
+        <div class="tot-grid md-fund-cards">
           <div class="card tot-box"><div class="muted">${I18n.t('fundReceivedTitle')}</div><div class="big-total">${money(summary.fund_received)}</div></div>
           <div class="card tot-box"><div class="muted">${I18n.t('totalDistributedTitle')}</div><div class="big-total">${money(summary.total_distributed)}</div></div>
-          <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">${I18n.t('availableBalanceTitle')}</div><div class="big-total">${money(summary.balance)}</div></div>
+          <div class="card tot-box ${bal > 0 ? 'ok' : ''} ${bal < 0 ? 'bad' : ''}"><div class="muted">${I18n.t('availableBalanceTitle')}</div><div class="big-total">${money(summary.balance)}</div></div>
         </div>
-        ${cards.length ? `<h2>${L('श्रेणी अनुसार', 'By Category')}</h2>` + cards.map(c => `
-          <a class="card item" href="#/add?tab=${CAT_TO_TAB[c.key]}">
+        ${cards.length ? `<h2>${L('श्रेणी अनुसार', 'By Category')}</h2><div class="md-cat-grid">` + cards.map(c => `
+          <a class="card item" href="${cardHref(c)}">
             <div class="row"><span class="who">${c.icon} ${catLabel(c)}</span><span class="amount">${money((summary.category_totals || {})[c.key.toLowerCase()])}</span></div>
-          </a>`).join('') : ''}
+          </a>`).join('') + `</div>` : ''}
         <h2>🧾 ${L('लेन-देन', 'Transactions')}</h2>
         <div class="choices small" id="md-chips">
           <button type="button" class="choice" data-r="week" aria-pressed="${mdRange === 'week'}">${I18n.t('thisWeek')}</button>
@@ -524,6 +558,8 @@
           : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
         ${mdHasNext ? `<button type="button" class="btn line" id="md-more">${I18n.t('loadMore')}</button>` : ''}`;
 
+      const projBtn = document.getElementById('md-projects');
+      if (projBtn) projBtn.onclick = () => projectPickerSheet(summary);
       document.getElementById('md-chips').querySelectorAll('button').forEach(b => b.onclick = async () => {
         mdRange = b.dataset.r;
         if (mdRange !== 'custom') { loading(); await loadTxns(true); render(); } else render();
@@ -1365,7 +1401,7 @@
   }
 
   // ----- Expenses list -----
-  let listState = { cat: '', shown: 20 };
+  let listState = { cat: '', shown: 20, range: 'month', from: '', to: '' };
 
   // The register is paginated (max 500 per page): follow every page so the history is never cut short.
   // An optional person filter (labour / supplier / contractor / contractor_contract) narrows it on the server.
@@ -1422,7 +1458,11 @@
   async function screenList(params) {
     chrome('list', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
-    listState = { cat: params.get('cat') || '', shown: 20 };
+    const personKeyInit = ['labour', 'supplier', 'contractor', 'contractor_contract'].find(k => params.get(k));
+    // A single person's history link ("View Expenses" from a Labour/Supplier/Contractor report) means
+    // their full account, not this month only -- so it starts unfiltered by date; the ordinary Expense
+    // List (no person filter) starts on "This month" per the date chips below.
+    listState = { cat: params.get('cat') || '', shown: 20, range: personKeyInit ? 'all' : 'month', from: '', to: '' };
     loading();
     let rows, names;
     try {
@@ -1460,26 +1500,54 @@
     };
 
     function draw() {
-      const shown = rows.filter(r => !listState.cat || r.expense_category === listState.cat);
+      const range = listState.range === 'week' ? mdWeekRange() : mdMonthRange();
+      const from = listState.range === 'custom' ? (listState.from || range.from) : range.from;
+      const to = listState.range === 'custom' ? (listState.to || range.to) : range.to;
+      const shown = rows.filter(r => (!listState.cat || r.expense_category === listState.cat)
+        && (listState.range === 'all' || (r.expense_date >= from && r.expense_date <= to)));
       const total = shown.reduce((s, r) => s + Number(r.amount), 0);
       const chip = (key, label) => `<button type="button" class="choice" data-c="${key}" aria-pressed="${listState.cat === key}">${label}</button>`;
-      $view.innerHTML = `
-        <h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>
-        <p class="muted">${L('हर खर्च अलग-अलग यहाँ दिखता है', 'Every expense, one by one')}</p>
-        ${personNote}
-        <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
-        <div class="card"><div class="row"><span>${L('कुल खर्च', 'Total')}</span><span class="amount">${money(total)}</span></div></div>` +
-        (shown.length ? shown.slice(0, listState.shown).map(r => `
+      const rangeChip = (key, label) => `<button type="button" class="choice" data-r="${key}" aria-pressed="${listState.range === key}">${label}</button>`;
+
+      const visible = shown.slice(0, listState.shown);
+      const groups = {};
+      visible.forEach(r => { (groups[r.expense_date] = groups[r.expense_date] || []).push(r); });
+      const dates = Object.keys(groups).sort().reverse();
+      const rowCard = r => `
           <div class="card item" data-id="${r.id}">
             <div class="row"><span class="who">${esc(nameOf(r) || '—')}</span><span class="amount">${money(r.amount)}</span></div>
-            <div class="meta">${CAT[r.expense_category].icon} ${catLabel(CAT[r.expense_category])}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
+            <div class="meta">${CAT[r.expense_category].icon} ${catLabel(CAT[r.expense_category])}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''}</div>
             ${r.expense_category === 'SUPPLIER' && r.description ? `<div class="note">🧱 ${esc(r.description)}</div>` : ''}
             ${r.remarks ? `<div class="note">📝 ${esc(r.remarks)}</div>` : ''}
             ${billActions(r)}
             ${can('canEditExpense') || can('canDeleteExpense') ? `<div class="row-actions">${can('canEditExpense') ? `<button type="button" class="btn line act act-edit">✏️ ${L('बदलें', 'Edit')}</button>` : ''}${can('canDeleteExpense') ? `<button type="button" class="btn line danger act act-del">🗑 ${L('हटाएँ', 'Delete')}</button>` : ''}</div>` : ''}
             <div class="act-msg"></div>
-          </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>${L('अभी कोई खर्च नहीं है.', 'No expenses yet.')}</p>${canAdd() ? `<a class="btn green" href="#/add">➕ ${L('खर्च डालें', 'Add Expense')}</a>` : ''}</div>`) +
+          </div>`;
+      const dayGroup = d => {
+        const list = groups[d];
+        const dayTotal = list.reduce((s, r) => s + Number(r.amount), 0);
+        return `<div class="list-day"><div class="row list-day-head"><span>${niceDate(d)}</span><span class="amount">${money(dayTotal)}</span></div>${list.map(rowCard).join('')}</div>`;
+      };
+      $view.innerHTML = `
+        <h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>
+        <p class="muted">${L('हर खर्च अलग-अलग यहाँ दिखता है', 'Every expense, one by one')}</p>
+        ${personNote}
+        <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
+        ${personKeyInit ? '' : `<div class="chips" id="list-range-chips">${rangeChip('week', I18n.t('thisWeek'))}${rangeChip('month', I18n.t('thisMonth'))}${rangeChip('custom', I18n.t('customRange'))}</div>
+        ${listState.range === 'custom' ? `<div class="step" id="list-custom">
+          <label for="list-from">${I18n.t('fromDate')}</label><input id="list-from" type="date" value="${listState.from || range.from}">
+          <label for="list-to">${I18n.t('toDate')}</label><input id="list-to" type="date" value="${listState.to || range.to}">
+        </div>` : ''}`}
+        <div class="card"><div class="row"><span>${L('कुल खर्च', 'Total')}</span><span class="amount">${money(total)}</span></div></div>` +
+        (dates.length ? dates.map(dayGroup).join('') : `<div class="empty"><div class="ico">📭</div><p>${L('अभी कोई खर्च नहीं है.', 'No expenses yet.')}</p>${canAdd() ? `<a class="btn green" href="#/add">➕ ${L('खर्च डालें', 'Add Expense')}</a>` : ''}</div>`) +
         (shown.length > listState.shown ? `<button type="button" class="btn line" id="more">⬇ ${L('और दिखाएँ', 'Show more')}</button>` : '');
+      const rangeChips = document.getElementById('list-range-chips');
+      if (rangeChips) rangeChips.querySelectorAll('[data-r]').forEach(b => b.onclick = () => { listState.range = b.dataset.r; listState.shown = 20; draw(); });
+      const listFrom = document.getElementById('list-from'), listTo = document.getElementById('list-to');
+      if (listFrom && listTo) {
+        const applyCustom = () => { listState.from = listFrom.value; listState.to = listTo.value; listState.shown = 20; draw(); };
+        listFrom.onchange = applyCustom; listTo.onchange = applyCustom;
+      }
       const rowOf = b => rows.find(x => x.id === Number(b.closest('.card').dataset.id));
       $view.querySelectorAll('.act-del').forEach(b => b.onclick = () => {
         const row = rowOf(b), box = b.closest('.card').querySelector('.act-msg');
