@@ -42,6 +42,17 @@ small { font-size: .78em; font-weight: 400; opacity: .85; }
   background: var(--card); border: 2px solid var(--blue); color: var(--blue);
   border-radius: var(--radius); font-weight: 700; text-decoration: none; font-size: 1.05rem;
 }
+/* Breadcrumb: Home > ... > current screen. Wraps to a second line rather than scrolling, since a
+   deep path (Settings > Users & Access > Reset Password) is rare and truncation would hide it. */
+.breadcrumb {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px;
+  margin-top: 8px; font-size: .92rem; color: var(--muted);
+}
+.breadcrumb[hidden] { display: none; }
+.breadcrumb a { color: var(--blue); text-decoration: none; font-weight: 700; }
+.breadcrumb a:active { text-decoration: underline; }
+.breadcrumb .crumb-sep { opacity: .6; }
+.breadcrumb .crumb-current { font-weight: 700; color: var(--ink); }
 
 /* User profile bar (name, role, logout) */
 .userbar {

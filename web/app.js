@@ -5,7 +5,7 @@
 
   // Shown in the user menu, and bumped whenever the app ships a user-visible change --
   // bump web/sw.js's CACHE version in the same commit so the install and the label agree.
-  const APP_VERSION = 'v11';
+  const APP_VERSION = 'v12';
 
   // ---------- words the user sees ----------
   // L(hi, en) shows only ONE language at a time, picked by the current language switcher --
@@ -70,14 +70,6 @@
   // Set once a new service worker has installed alongside a still-running old one (see the
   // registration code near the bottom): shows the reload banner until the user taps it.
   let updateAvailable = false;
-  // Hashes actually visited this session, in order -- lets the topbar Back button return to wherever
-  // the user really came from (e.g. Add Expense reached from a Reports link goes back to Reports),
-  // instead of a screen's hardcoded default. Capped so a long session doesn't grow it unbounded.
-  let navStack = [];
-  function pushNav(hash) {
-    if (navStack[navStack.length - 1] !== hash) navStack.push(hash);
-    if (navStack.length > 30) navStack.shift();
-  }
   // Closes the top-right user menu, if open; set by renderUserbar() on each render and invoked by
   // the one shared document/hashchange listener below (registered once, not per-render).
   let userMenuCloser = null;
@@ -271,7 +263,31 @@
     return state.names;
   }
 
-  // ---------- chrome (back button, tabs) ----------
+  // ---------- topbar breadcrumb ----------
+  // One label per `tab` id (the same id chrome()'s callers already pass for nav-highlighting).
+  // Several distinct screens intentionally share one tab id (e.g. Settings and every screen under
+  // it all pass 'settings', so the bottom/Settings chrome highlights consistently) -- the breadcrumb
+  // collapses those into one segment rather than guessing a false intermediate level for them.
+  const TAB_LABEL = {
+    home: () => L('होम', 'Dashboard'),
+    add: () => L('खर्च डालें', 'Add Expense'),
+    list: () => L('खर्च की लिस्ट', 'Expense List'),
+    reports: () => L('कुल खर्च', 'Total Expense'),
+    labour: () => L('मज़दूर', 'Labour'),
+    suppliers: () => L('सप्लायर', 'Suppliers'),
+    contractors: () => L('ठेकेदार', 'Contractors'),
+    project: () => L('प्रोजेक्ट', 'Projects'),
+    fund: () => L('मैनेजर फंड', 'Manager Fund'),
+    profile: () => L('पासवर्ड बदलें', 'Change Password'),
+    users: () => L('यूज़र', 'Users'),
+    settings: () => L('सेटिंग्स', 'Settings'),
+  };
+  // hash (as passed for `back`) -> the tab id that owns that hash, so the breadcrumb can show a
+  // middle segment (e.g. Home > Total Expense > Labour) when `back` points at a different screen
+  // than a bare Home.
+  const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users' };
+
+  // ---------- chrome (back button, breadcrumb, tabs) ----------
   function chrome(tab, back) {
     const loggedIn = !!state.token && tab !== 'login';
     $view.onclick = null;   // a screen may attach a delegated click handler
@@ -305,13 +321,25 @@
     document.body.classList.toggle('no-tabs', document.getElementById('tabs').hidden);
     const top = document.getElementById('topbar');
     top.hidden = !back;
+    const crumb = document.getElementById('breadcrumb');
     if (back) {
-      // Prefer where the user actually came from over the screen's hardcoded default, so e.g. Add
-      // Expense reached from a Reports link goes back to Reports, not always to Home.
-      const prev = navStack.length > 1 ? navStack[navStack.length - 2] : null;
+      // Back always goes up the hierarchy (this screen's real parent), never "wherever the user
+      // happened to click from" -- so it stays predictable no matter how a screen was reached.
       const backBtn = document.getElementById('backBtn');
-      backBtn.setAttribute('href', prev || back);
+      backBtn.setAttribute('href', back);
       backBtn.innerHTML = `← ${L('वापस', 'BACK')}`;
+
+      const backTab = HASH_TAB[back];
+      const trail = [{ hash: '#/home', label: TAB_LABEL.home() }];
+      if (backTab && backTab !== 'home' && backTab !== tab) trail.push({ hash: back, label: TAB_LABEL[backTab]() });
+      const current = TAB_LABEL[tab] ? TAB_LABEL[tab]() : '';
+      crumb.hidden = !current;
+      if (current) {
+        crumb.innerHTML = trail.map(c => `<a href="${c.hash}">${esc(c.label)}</a><span class="crumb-sep">›</span>`).join('')
+          + `<span class="crumb-current" aria-current="page">${esc(current)}</span>`;
+      }
+    } else {
+      crumb.hidden = true;
     }
     document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     window.scrollTo(0, 0);
@@ -2353,7 +2381,6 @@
     }
     const need = Authz.routePermission(page, arg);
     if (need && !canAny(need)) return screenNoAccess();   // typed-in / bookmarked links
-    pushNav(location.hash || '#/home');
     switch (page) {
       case 'add': return screenAdd();
       case 'done': return screenDone();
