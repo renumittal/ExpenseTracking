@@ -278,6 +278,12 @@ a.card { display: block; color: inherit; text-decoration: none; }
    .choice, .card etc. are shared classes used at their roomier default size elsewhere. */
 .add-expense .step { margin: 14px 0; }
 .add-expense .step > label, .add-expense .step > .q { margin-bottom: 6px; }
+.add-expense h1 { margin: 4px 0 2px; }
+.add-expense p.muted { margin: 4px 0 10px; }
+/* Single-category users (e.g. a Manager who can only add Labour) skip the choice-button grid --
+   nothing to pick, so step 1 is just a confirmation line, not a full-height button. */
+.add-expense .cat-fixed { margin: 10px 0; }
+.add-expense .cat-fixed .q { margin-bottom: 0; font-size: 1.1rem; }
 .add-expense .choices.small .choice { min-height: 52px; padding: 6px; }
 .add-expense .quick { margin-top: 8px; }
 .add-expense .quick .choice { min-height: 48px; }

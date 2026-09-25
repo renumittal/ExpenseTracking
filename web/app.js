@@ -911,7 +911,12 @@
       return;
     }
 
-    const f = { cat: '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '',
+    // With exactly one usable category and no "Give Fund" alternative, there is nothing to pick --
+    // showing a full-size single-button choice grid just to confirm the obvious wastes a screenful
+    // on a phone, so collapse step 1 to a plain confirmation line and preselect it.
+    const cats = allowedCats();
+    const singleCat = cats.length === 1 && !can('canGiveManagerFund');
+    const f = { cat: singleCat ? cats[0].key : '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '',
       ownerId: state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '') };
     let saving = false;
     $view.innerHTML = `
@@ -923,9 +928,12 @@
       ${ownerChoices.length > 1 ? `<div class="step" id="s-owner"><label for="owner">${L('किस मालिक की तरफ से?', 'On behalf of')}</label>
         <select id="owner"><option value="">${L('— मालिक चुनिए —', '— Choose an owner —')}</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
         <div class="field-error" id="e-owner"></div></div>` : ''}
-      <div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
-        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
-        <div class="field-error" id="e-cat"></div></div>
+      ${singleCat
+        ? `<div class="step cat-fixed" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')} <b>${catLabel(cats[0])}</b></div>
+        <div class="field-error" id="e-cat"></div></div>`
+        : `<div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
+        <div class="choices">${cats.map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
+        <div class="field-error" id="e-cat"></div></div>`}
       <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>${L('कितना पैसा?', 'Amount')}</label>
         <div class="rupee"><span>₹</span><input id="amt" type="text" inputmode="decimal" pattern="[0-9.]*" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
         <div class="words" id="words"></div><div class="field-error" id="e-amt"></div></div>
