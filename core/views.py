@@ -398,8 +398,14 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
     def _require_project_access(self, user, project):
         """403 (not 404) if `user` has no access at all to `project` -- this.get_queryset() already
         scopes the normal list/retrieve, but manager-summary/transactions look the project up
-        directly (see _project_or_404) so a project the user cannot see 403s instead of 404ing."""
-        if not (is_admin(user) or services.has_perm(user, CAN_VIEW_EXPENSES, project)):
+        directly (see _project_or_404) so a project the user cannot see 403s instead of 404ing.
+
+        Gated on project MEMBERSHIP (admin, or a real OWNER/MANAGER assignment), not on the
+        canViewExpenses permission: a manager whose role has canViewExpenses turned off (e.g. to
+        keep them off the full "View Expenses" report) must still be able to see their OWN Manager
+        Dashboard -- that view is already limited to their own fund/spend and to the categories
+        _allowed_categories grants them, so it doesn't need the broader view-all-expenses permission."""
+        if not is_project_member(user, project):
             raise PermissionDenied('You do not have access to this project.')
 
     @action(detail=True, methods=['get'], url_path='manager-summary')
