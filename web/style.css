@@ -93,6 +93,7 @@ small { font-size: .78em; font-weight: 400; opacity: .85; }
   color: inherit; background: none; border: 0; border-radius: 8px; cursor: pointer;
 }
 .user-menu-item:hover, .user-menu-lang:hover { background: var(--bg); }
+.user-menu-version { padding: 4px 10px 2px; font-size: .75rem; font-weight: 700; color: var(--muted); text-align: center; }
 @media (max-width: 359px) {
   .user-menu-panel { position: fixed; left: 12px; right: 12px; top: auto; min-width: 0; }
 }

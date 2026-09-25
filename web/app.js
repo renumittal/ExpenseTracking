@@ -3,6 +3,10 @@
 (function () {
   'use strict';
 
+  // Shown in the user menu, and bumped whenever the app ships a user-visible change --
+  // bump web/sw.js's CACHE version in the same commit so the install and the label agree.
+  const APP_VERSION = 'v9';
+
   // ---------- words the user sees ----------
   const CATS = [
     { key: 'LABOUR',        icon: '👷', hi: 'मज़दूर',   en: 'Labour',     type: 'Labour Payment',     party: 'LABOUR' },
@@ -52,11 +56,14 @@
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
 
   const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser'), fundForbidden: false };
+  // Set once a new service worker has installed alongside a still-running old one (see the
+  // registration code near the bottom): shows the reload banner until the user taps it.
+  let updateAvailable = false;
   // Closes the top-right user menu, if open; set by renderUserbar() on each render and invoked by
   // the one shared document/hashchange listener below (registered once, not per-render).
   let userMenuCloser = null;
   const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
-  // The one permission check used everywhere: can('canAddExpense'). Role names live only in authz.js.
+  // The one permission check used everywhere: can('canAddSupplierExpense'). Role names live only in authz.js.
   // The server decides these (it returns them in /me/); the local matrix can only hide more, never grant more.
   const SERVER_PERMS = ['canViewManagerFund', 'canGiveManagerFund', 'canDistributeManagerFund', 'canUploadBill', 'canViewBill'];
   const serverAllows = perm => {
@@ -142,7 +149,7 @@
     if (me.project_permissions) {
       return Promise.all(Object.keys(me.project_permissions).map(async id => {
         const p = (await api(`projects/${id}/people/`)).project;
-        return { id: p.id, name: p.name, code: p.code };
+        return { id: p.id, name: p.name, code: p.code, status: p.status };
       }));
     }
     try {
@@ -162,7 +169,10 @@
     const demo = DEMO ? Authz.demoUser(state.demoId) : null;
     state.user = Authz.buildUser({ me: state.me, projects: state.realProjects, demo });
     const mine = new Set(state.user.assignedProjects.map(a => a.projectId));
-    state.projects = state.realProjects.filter(p => mine.has(p.id));
+    // An archived project is closed: no menu should offer to add/view its data day-to-day.
+    // (Super admin still manages it -- editing status, viewing its members -- from Settings,
+    // which fetches its own project list and never goes through state.projects.)
+    state.projects = state.realProjects.filter(p => mine.has(p.id) && p.status !== 'ARCHIVED');
     const saved = Number(store.get('projectId'));
     state.project = state.projects.find(p => p.id === saved) || state.projects[0] || null;
     state.names = null;
@@ -192,6 +202,8 @@
           ${can('canChangeOwnPassword') ? `<a class="user-menu-item" role="menuitem" href="#/profile">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}
           ${can('canManagePermissions') ? `<a class="user-menu-item" role="menuitem" href="#/settings">⚙️ ${esc(I18n.t('settings'))}</a>` : ''}
           <button type="button" class="user-menu-item" role="menuitem" id="logoutBtn">🚪 ${esc(I18n.t('logout'))}</button>
+          <div class="user-menu-divider"></div>
+          <div class="user-menu-version">Expense Tracker ${APP_VERSION}</div>
         </div>
       </div>`;
 
@@ -243,6 +255,11 @@
     if (showWarning) warn.textContent = I18n.getLang() === 'hi'
       ? 'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें.'
       : 'Permissions could not be loaded -- some buttons may be hidden. Please reload the page.';
+    const updateBanner = document.getElementById('updateBanner');
+    updateBanner.hidden = !updateAvailable;
+    if (updateAvailable) updateBanner.textContent = I18n.getLang() === 'hi'
+      ? '🔄 नया वर्शन उपलब्ध है. रीलोड करने के लिए यहाँ टैप करें.'
+      : '🔄 A new version is available. Tap here to reload.';
     const nav = document.getElementById('tabs');
     const items = loggedIn && state.user ? Authz.navFor(can) : [];
     const more = items.filter(n => !n.primary);
@@ -2294,8 +2311,27 @@
   document.addEventListener('focusin', e => { if (typing(e.target)) document.body.classList.add('typing'); });
   document.addEventListener('focusout', () => setTimeout(() => { if (!typing(document.activeElement)) document.body.classList.remove('typing'); }, 50));
 
+  document.getElementById('updateBanner').addEventListener('click', () => location.reload());
+
   if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(e => console.error('service worker', e)));
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').then(reg => {
+        // A worker installing while one is already active/controlling this page means a newer
+        // version was just deployed -- tell the user instead of silently swapping code under them.
+        const announce = worker => worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+            updateAvailable = true;
+            const b = document.getElementById('updateBanner');
+            b.hidden = false;
+            b.textContent = I18n.getLang() === 'hi'
+              ? '🔄 नया वर्शन उपलब्ध है. रीलोड करने के लिए यहाँ टैप करें.'
+              : '🔄 A new version is available. Tap here to reload.';
+          }
+        });
+        if (reg.installing) announce(reg.installing);
+        reg.addEventListener('updatefound', () => reg.installing && announce(reg.installing));
+      }).catch(e => console.error('service worker', e));
+    });
   }
 
   document.addEventListener('click', e => {

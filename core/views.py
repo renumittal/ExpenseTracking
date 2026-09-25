@@ -182,7 +182,7 @@ class ProjectPeopleView(APIView):
             raise NotFound('Project not found.')
         labour = ProjectLabour.objects.filter(project=project).select_related('labour').order_by('labour__name')
         return Response({
-            'project': {'id': project.id, 'name': project.name, 'code': project.code},
+            'project': {'id': project.id, 'name': project.name, 'code': project.code, 'status': project.status},
             'owners': list(Owner.objects.filter(user__in=services.users_with_role(project, 'OWNER'))
                            .order_by('name').values('id', 'name')),
             'managers': list(Manager.objects.filter(user__in=services.users_with_role(project, 'MANAGER'))
