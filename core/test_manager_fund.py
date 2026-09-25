@@ -14,12 +14,14 @@ from rest_framework.test import APITestCase
 from . import ledger
 from .models import (
     AccessRole,
+    ExpenseCategory,
     ExpenseTransaction,
     Labour,
     Manager,
     ManagerFund,
     ManagerLabourDistribution,
     Owner,
+    PartyType,
     PaymentMode,
     Project,
     ProjectLabour,
@@ -246,6 +248,22 @@ class OverdrawTests(LedgerBase):
         self.assertEqual(self.batch([]).status_code, 400)
         self.assertEqual(ManagerLabourDistribution.objects.count(), 0)
 
+    def test_labour_batch_excludes_manager_misc_expense_from_available_balance(self):
+        """manager_balance(P,m), not the raw FIFO-lot sum, is what caps a labour distribution: a Misc
+        expense the manager already recorded spends fund money without touching any lot."""
+        self.give('5000.00')
+        ExpenseTransaction.objects.create(
+            project=self.project, expense_date='2026-09-21', expense_category=ExpenseCategory.MISCELLANEOUS,
+            expense_type='Other', party_type=PartyType.NONE, payee_name='Cement shop', paid_by_owner=self.owner,
+            amount='4000.00', payment_mode=PaymentMode.CASH, created_by=self.manager_user)
+        self.assertEqual(self.position()['available_balance'], D('1000'))
+        r = self.batch([(self.labours[0], '1500')])
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('exceeds the available fund balance', str(r.data))
+        self.assertEqual(ManagerLabourDistribution.objects.count(), 0)
+        r2 = self.batch([(self.labours[0], '1000')])
+        self.assertEqual(r2.status_code, 201, r2.data)
+
     def test_single_distribution_endpoint_still_works_and_ignores_a_named_fund(self):
         fund = self.give('100.00')
         self.auth_as(self.manager_user)
@@ -354,6 +372,48 @@ class CancellationTests(LedgerBase):
     def test_a_fund_with_distributions_cannot_be_deleted(self):
         with self.assertRaises(ProtectedError):
             self.d1.manager_fund.delete()
+
+
+class FundCancellationTests(LedgerBase):
+    def cancel_fund(self, fund, user, reason='Given by mistake'):
+        self.auth_as(user)
+        return self.client.post(f'/api/manager-funds/{fund.id}/cancel/', {'remarks': reason} if reason else {})
+
+    def test_cancelled_fund_excluded_from_fund_given(self):
+        active = self.give('5000.00', '2026-09-20')
+        cancelled = self.give('3000.00', '2026-09-21')
+        self.assertEqual(self.position()['total_received'], D('8000'))
+
+        r = self.cancel_fund(cancelled, self.owner_user)
+        self.assertEqual(r.status_code, 200, r.data)
+        cancelled.refresh_from_db()
+        self.assertEqual(cancelled.status, TransactionStatus.CANCELLED)
+        self.assertEqual(cancelled.cancelled_by, self.owner_user)
+        self.assertEqual(cancelled.cancel_reason, 'Given by mistake')
+
+        self.assertEqual(ledger.fund_given(self.project, self.manager), D('5000'))
+        self.assertEqual(self.position()['total_received'], D('5000'))
+        active.refresh_from_db()
+        self.assertEqual(active.status, TransactionStatus.ACTIVE)
+
+    def test_cancelled_fund_money_is_not_available_to_distribute(self):
+        self.give('5000.00', '2026-09-20')
+        fund2 = self.give('5000.00', '2026-09-21')
+        self.cancel_fund(fund2, self.owner_user)
+        self.assertEqual(self.position()['available_balance'], D('5000'))
+        r = self.batch([(self.labours[0], '6000')])
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.batch([(self.labours[0], '5000')]).status_code, 201)
+
+    def test_manager_cannot_cancel_a_fund(self):
+        fund = self.give('1000.00')
+        self.assertEqual(self.cancel_fund(fund, self.manager_user).status_code, 403)
+
+    def test_reason_required_and_double_cancel_refused(self):
+        fund = self.give('1000.00')
+        self.assertEqual(self.cancel_fund(fund, self.owner_user, reason=None).status_code, 400)
+        self.assertEqual(self.cancel_fund(fund, self.owner_user).status_code, 200)
+        self.assertEqual(self.cancel_fund(fund, self.owner_user).status_code, 400)
 
 
 class VisibilityAndAuthorizationTests(LedgerBase):

@@ -5,6 +5,7 @@ from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.validators import UniqueValidator
 
+from . import ledger
 from .access import services
 from .models import (
     Contractor,
@@ -109,8 +110,11 @@ class ExpenseTransactionEditSerializer(serializers.ModelSerializer):
 
 class ManagerFundSerializer(serializers.ModelSerializer):
     """An Owner giving money to a Manager for a project (not an expense)."""
+    # distributed_amount/balance below are this ONE fund's own FIFO lot (internal allocation only --
+    # see core/ledger.py). The manager's real available money is ledger.manager_balance(project,
+    # manager), exposed here as manager_balance, not this per-fund figure.
     distributed_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
-    balance = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    manager_balance = serializers.SerializerMethodField()
     manager_name = serializers.CharField(source='manager.name', read_only=True)
     given_by_owner_name = serializers.CharField(source='given_by_owner.name', read_only=True)
 
@@ -119,9 +123,12 @@ class ManagerFundSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'project', 'manager', 'manager_name', 'fund_date', 'fund_amount', 'given_by_owner',
             'given_by_owner_name', 'payment_mode', 'remarks', 'created_at', 'created_by',
-            'distributed_amount', 'balance',
+            'distributed_amount', 'manager_balance', 'status', 'cancelled_by', 'cancelled_at', 'cancel_reason',
         ]
-        read_only_fields = ['created_at', 'created_by']
+        read_only_fields = ['created_at', 'created_by', 'status', 'cancelled_by', 'cancelled_at', 'cancel_reason']
+
+    def get_manager_balance(self, obj):
+        return ledger.manager_balance(obj.project, obj.manager)
         extra_kwargs = {'fund_amount': {'min_value': Decimal('0.01')}}
 
     def validate(self, attrs):

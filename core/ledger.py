@@ -63,8 +63,10 @@ def _sum(queryset, field):
 
 
 def fund_given(project, manager):
-    """fund_given(P,m): all active ManagerFund given to this manager on this project."""
-    return _sum(ManagerFund.objects.filter(project=project, manager=manager), 'fund_amount')
+    """fund_given(P,m): all ACTIVE (non-cancelled) ManagerFund given to this manager on this project."""
+    return _sum(
+        ManagerFund.objects.filter(project=project, manager=manager, status=TransactionStatus.ACTIVE), 'fund_amount'
+    )
 
 
 def manager_spent(project, manager):
@@ -146,7 +148,9 @@ def position(project, manager):
 
 def _lots(project, manager, lock=False):
     """[[fund, remaining], ...] oldest fund first. With lock=True the fund rows are locked for update."""
-    funds = ManagerFund.objects.filter(project=project, manager=manager).order_by('fund_date', 'id')
+    funds = ManagerFund.objects.filter(
+        project=project, manager=manager, status=TransactionStatus.ACTIVE
+    ).order_by('fund_date', 'id')
     if lock:
         funds = funds.select_for_update()
     funds = list(funds)
@@ -171,7 +175,12 @@ def distribute(*, project, manager, date, payments, actor, remarks=''):
 
     with transaction.atomic():
         lots = _lots(project, manager, lock=True)
-        available = sum((max(remaining, ZERO) for _, remaining in lots), ZERO)
+        # The single source of truth for "how much may this manager still spend" is
+        # manager_balance(P,m) (fund_given - manager_spent), not the raw FIFO-lot sum: a manager who
+        # has already spent fund money on a direct Misc/Supplier/Contractor expense has less available
+        # than the lots alone show (lots only track labour distributions). manager_balance is always
+        # <= the lot sum, so the FIFO walk below still finds enough remaining lot balance to cover it.
+        available = manager_balance(project, manager)
         if total > available:
             raise ValidationError({
                 'payments': f'Batch total {total} exceeds the available fund balance {available}. Nothing was saved.'
@@ -248,7 +257,7 @@ def statement(project, manager):
         'id': f.id, 'date': f.fund_date, 'given_by_owner_id': f.given_by_owner_id,
         'given_by_owner_name': f.given_by_owner.name, 'amount': f.fund_amount, 'payment_mode': f.payment_mode,
         'remarks': f.remarks, 'created_by': f.created_by.get_username() if f.created_by else None,
-        'remaining': lots.get(f.id, ZERO),
+        'remaining': lots.get(f.id, ZERO), 'status': f.status,
     } for f in funds]
 
     dists = list(
@@ -262,15 +271,17 @@ def statement(project, manager):
     } for d in dists]
 
     entries = [{'kind': 'FUND', 'order': 0, 'id': r['id'], 'date': r['date'], 'amount': r['amount'],
-                'label': f"Fund from {r['given_by_owner_name']}", 'status': 'ACTIVE'} for r in fund_rows]
+                'label': f"Fund from {r['given_by_owner_name']}", 'status': r['status']} for r in fund_rows]
     entries += [{'kind': 'DISTRIBUTION', 'order': 1, 'id': r['id'], 'date': r['date'], 'amount': r['amount'],
                  'label': f"To {r['labour_name']}", 'status': r['status']} for r in dist_rows]
     entries.sort(key=lambda e: (e['date'], e['order'], e['id']))
     running = ZERO
-    for e in entries:                       # cancelled distributions are listed but do not move the balance
-        if e['kind'] == 'FUND':
+    for e in entries:                       # cancelled funds/distributions are listed but do not move the balance
+        if e['status'] != 'ACTIVE':
+            pass
+        elif e['kind'] == 'FUND':
             running += e['amount']
-        elif e['status'] == 'ACTIVE':
+        else:
             running -= e['amount']
         e['running_balance'] = running
         del e['order']

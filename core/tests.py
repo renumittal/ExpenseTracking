@@ -1,3 +1,4 @@
+import os
 from datetime import date, timedelta
 from unittest import mock
 from decimal import Decimal
@@ -449,7 +450,7 @@ class ReportingTests(APITestCase):
         manager_fund_summary = response.data['manager_fund_summary']
         self.assertEqual(len(manager_fund_summary), 1)
         self.assertEqual(Decimal(manager_fund_summary[0]['distributed_amount']), Decimal('250.00'))
-        self.assertEqual(Decimal(manager_fund_summary[0]['balance']), Decimal('750.00'))
+        self.assertEqual(Decimal(manager_fund_summary[0]['manager_balance']), Decimal('750.00'))
 
     def test_category_report_matches_dashboard(self):
         self.auth_as(self.owner_user)
@@ -1311,7 +1312,10 @@ class SupplierBillTests(APITestCase):
             self.assertEqual(txn.bill_content_type, ctype)
             self.assertEqual(txn.bill_uploaded_by, self.owner_user)
             self.assertTrue(txn.bill_path.startswith(f'bills/{self.project.id}/{txn.id}/'))
-            self.assertNotIn('a.', txn.bill_path)   # user filename is never the storage key
+            stored_name = txn.bill_path.rsplit('/', 1)[-1]
+            expected_ext = {'image/png': '.png', 'image/jpeg': '.jpg', 'application/pdf': '.pdf'}[ctype]
+            self.assertEqual(os.path.splitext(stored_name)[1], expected_ext)
+            self.assertNotEqual(stored_name, name)   # user filename is never the storage key
         self.assertTrue(r.data['has_bill'])
         self.assertEqual(r.data['bill_filename'], 'a.pdf')
         self.assertNotIn('bill_path', r.data)

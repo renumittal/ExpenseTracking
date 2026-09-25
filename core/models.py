@@ -595,6 +595,14 @@ class ManagerFund(models.Model):
         related_name='manager_funds_recorded',
     )
 
+    status = models.CharField(max_length=20, choices=TransactionStatus.choices, default=TransactionStatus.ACTIVE)
+    cancelled_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, editable=False,
+        related_name='manager_funds_cancelled',
+    )
+    cancelled_at = models.DateTimeField(null=True, blank=True, editable=False)
+    cancel_reason = models.TextField(blank=True, default='', editable=False)
+
     class Meta:
         indexes = [
             models.Index(fields=['project']),
@@ -636,6 +644,21 @@ class ManagerFund(models.Model):
     @property
     def balance(self):
         return self.fund_amount - self.distributed_amount
+
+    def cancel(self, cancelled_by=None, reason=None):
+        """Never hard-delete a fund; mark it CANCELLED instead (mirrors ExpenseTransaction.cancel)."""
+        from django.utils import timezone
+
+        self.status = TransactionStatus.CANCELLED
+        self.cancelled_at = timezone.now()
+        update_fields = ['status', 'cancelled_at']
+        if cancelled_by is not None:
+            self.cancelled_by = cancelled_by
+            update_fields.append('cancelled_by')
+        if reason:
+            self.cancel_reason = reason
+            update_fields.append('cancel_reason')
+        self.save(update_fields=update_fields)
 
 
 class ManagerLabourDistribution(models.Model):

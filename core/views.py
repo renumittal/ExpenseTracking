@@ -58,6 +58,7 @@ from .permissions import (
     RoleAllowed,
     can_cancel_distribution,
     can_distribute_manager_fund,
+    can_give_manager_fund,
     can_view_manager_fund,
     effective_permissions,
     has_permission,
@@ -366,7 +367,10 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
                 'manager_name': fund.manager.name,
                 'fund_amount': fund.fund_amount,
                 'distributed_amount': fund.distributed_amount,
-                'balance': fund.balance,
+                'status': fund.status,
+                # The manager's real available money (single source of truth), not this one fund's
+                # own FIFO-lot remainder -- see core/ledger.py.
+                'manager_balance': ledger.manager_balance(project, fund.manager),
             }
             for fund in project.manager_funds.select_related('manager')
         ]
@@ -771,6 +775,21 @@ class ManagerFundViewSet(viewsets.ModelViewSet):
         managers = {m.id: m for m in Manager.objects.filter(id__in={m for _, m in pairs})}
         return Response({'statements': [ledger.statement(projects[p], managers[m]) for p, m in sorted(pairs)]})
 
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Owner / admin only (same permission as giving a fund). The fund stops counting in
+        fund_given/manager_balance and its money is no longer available to distribute."""
+        fund = self.get_object()
+        if not can_give_manager_fund(request.user, fund.project):
+            raise PermissionDenied('Only an owner of this project can cancel a fund.')
+        if fund.status == TransactionStatus.CANCELLED:
+            raise ValidationError('This fund is already cancelled.')
+        reason = request.data.get('remarks') or request.data.get('reason')
+        if not reason:
+            raise ValidationError({'remarks': 'A reason is required to cancel a fund.'})
+        fund.cancel(cancelled_by=request.user, reason=reason)
+        return Response(self.get_serializer(fund).data)
+
 
 class ManagerLabourDistributionViewSet(viewsets.ModelViewSet):
     """
@@ -861,7 +880,8 @@ class ManagerSummaryView(APIView):
                 'project': fund.project.code,
                 'fund_amount': fund.fund_amount,
                 'distributed_amount': fund.distributed_amount,
-                'balance': fund.balance,
+                'status': fund.status,
+                'manager_balance': ledger.manager_balance(fund.project, fund.manager),
             }
             for fund in funds
         ]
