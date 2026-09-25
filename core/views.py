@@ -48,6 +48,7 @@ from .permissions import (
     CAN_UPLOAD_BILL,
     CAN_VIEW_BILL,
     CAN_VIEW_EXPENSES,
+    CAN_VIEW_PROJECTS,
     RoleAllowed,
     can_cancel_distribution,
     can_distribute_manager_fund,
@@ -200,7 +201,9 @@ class ProjectPeopleView(APIView):
 
 class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
     """
-    Read: admin sees every project; an owner only the projects they hold an OWNER-role grant on.
+    Read: admin sees every project; anyone else only the projects their UserAccess grant gives them
+    canViewProjects on (Owner/Manager/Viewer -- this is a *view* permission, not tied to any one role;
+    see core/access_catalog.py RESET_DEFAULTS, which grants it to all three by default).
     Create/update (including archiving, a status change): super admin only -- project administration
     lives entirely in Settings -> Projects now (see people.py's project-members endpoints, gated the
     same way). A project's code never changes once created; if none is given on create, one is
@@ -209,7 +212,7 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
 
     serializer_class = ProjectSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_permissions(self):
@@ -221,7 +224,10 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         user = self.request.user
         if is_admin(user):
             return Project.objects.all()
-        return services.projects_with_role(user, 'OWNER')
+        # Project-aware: respects a per-project ALLOW/DENY override on canViewProjects, not just
+        # "does this role ever get it" -- same pattern as ExpenseTransactionViewSet.get_queryset below.
+        ids = [p.id for p in services.accessible_projects(user) if services.has_perm(user, CAN_VIEW_PROJECTS, p)]
+        return Project.objects.filter(id__in=ids)
 
     def perform_create(self, serializer):
         code = (serializer.validated_data.get('code') or '').strip().upper()
@@ -349,7 +355,7 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
 
     serializer_class = ExpenseTransactionSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER, Role.MANAGER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def _guard_change(self, instance, permission, allow_distribution=False):

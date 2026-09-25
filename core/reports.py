@@ -32,7 +32,7 @@ from .models import (
     ZERO,
 )
 from .access import services
-from .permissions import RoleAllowed, is_admin
+from .permissions import CAN_VIEW_REPORTS, RoleAllowed, is_admin
 from .serializers import ExpenseTransactionSerializer
 
 
@@ -41,10 +41,15 @@ from .serializers import ExpenseTransactionSerializer
 # ---------------------------------------------------------------------------
 
 def scoped_projects(user):
-    """All projects for admin; only linked projects for an owner."""
+    """
+    All projects for admin; otherwise every project this user's UserAccess grant gives them
+    canViewReports on (Owner/Manager/Viewer -- a view permission, not an owner-only one; see
+    core/access_catalog.py RESET_DEFAULTS). Project-aware: respects a per-project override.
+    """
     if is_admin(user):
         return Project.objects.all()
-    return services.projects_with_role(user, 'OWNER')
+    ids = [p.id for p in services.accessible_projects(user) if services.has_perm(user, CAN_VIEW_REPORTS, p)]
+    return Project.objects.filter(id__in=ids)
 
 
 def scoped_transactions(user):
@@ -102,7 +107,7 @@ class CategoryExpenseReportView(APIView):
     """GET /reports/category-expense/?project=&category=&date_from=&date_to="""
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         qs = apply_report_filters(scoped_transactions(request.user), request.query_params)
@@ -137,7 +142,7 @@ class ContractorReportView(APIView):
     """GET /reports/contractor/?project= (contract vs paid vs balance)."""
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         projects = scoped_projects(request.user)
@@ -191,7 +196,7 @@ class SupplierReportView(APIView):
     """GET /reports/supplier/?project= -- total paid per supplier."""
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         qs = apply_report_filters(scoped_transactions(request.user), request.query_params)
@@ -231,7 +236,7 @@ class LabourReportView(APIView):
     """
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         qs = apply_report_filters(scoped_transactions(request.user), request.query_params)
@@ -267,7 +272,7 @@ class MiscExpenseReportView(APIView):
     """GET /reports/misc/?project= -- grouped by expense_type."""
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         qs = apply_report_filters(scoped_transactions(request.user), request.query_params)
@@ -338,7 +343,7 @@ class DateWiseExpenseReportView(APIView):
     """GET /reports/date-wise/?project=&date_from=&date_to= -- daily totals."""
 
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
 
     def get(self, request):
         qs = apply_report_filters(scoped_transactions(request.user), request.query_params)
@@ -373,7 +378,7 @@ class PaymentRegisterView(generics.ListAPIView):
 
     serializer_class = ExpenseTransactionSerializer
     permission_classes = [RoleAllowed]
-    allowed_roles = {Role.OWNER}
+    allowed_roles = {Role.OWNER, Role.MANAGER, 'VIEWER'}
     pagination_class = PaymentRegisterPagination
 
     def get_queryset(self):

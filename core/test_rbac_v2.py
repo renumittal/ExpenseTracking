@@ -553,6 +553,34 @@ class SeedRbacDemoTests(APITestCase):
             }, format='json')
             self.assertEqual(r.status_code, 201, project.code)
 
+    def test_manoj_can_view_dashboard_list_and_reports_on_both_sites(self):
+        """
+        A manager's Dashboard/Expenses/Reports access is his canViewProjects/canViewExpenses/
+        canViewReports grant, not the canAddSupplierExpense-family checks that gate Add Expense --
+        those are separate permissions and must not gate these read screens (see the ProjectViewSet /
+        reports.py view views, and web/app.js's friendly() which used to show the Add Expense denial
+        text for any 403 on any screen).
+        """
+        site_a = Project.objects.get(code='SITE-A')
+        site_b = Project.objects.get(code='SITE-B')
+        self._login('manoj')
+
+        codes = {p['code'] for p in self.client.get('/api/projects/').data}
+        self.assertEqual(codes, {'SITE-A', 'SITE-B'})
+
+        for project in (site_a, site_b):
+            dash = self.client.get(f'/api/projects/{project.id}/dashboard/')
+            self.assertEqual(dash.status_code, 200, project.code)
+
+            expenses = self.client.get('/api/expense-transactions/', {'project': project.id})
+            self.assertEqual(expenses.status_code, 200, project.code)
+
+            register = self.client.get('/api/reports/payment-register/', {'project': project.id})
+            self.assertEqual(register.status_code, 200, project.code)
+
+            category = self.client.get('/api/reports/category-expense/', {'project': project.id})
+            self.assertEqual(category.status_code, 200, project.code)
+
     def test_only_renu_sees_access_control(self):
         renu = self._login('renu')
         parveen = User.objects.get(username='parveen')
