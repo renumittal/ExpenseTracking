@@ -272,6 +272,10 @@ a.card { display: block; color: inherit; text-decoration: none; }
   display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   background: var(--card); border-top: 2px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
+  /* Forces its own compositing layer so iOS Safari repaints it every frame instead of letting it
+     lag behind and briefly scroll with the page during a touch/momentum scroll. */
+  transform: translateZ(0);
+  will-change: transform;
 }
 .tabs[hidden], .topbar[hidden] { display: none; }
 body.typing .tabs, body.typing .menu-sheet { display: none; }
@@ -290,6 +294,8 @@ body.typing main { padding-bottom: 24px; }
   display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 12px calc(12px + env(safe-area-inset-bottom) / 2);
   background: var(--card); border: 2px solid var(--line); border-bottom: 0; border-radius: var(--radius) var(--radius) 0 0;
   box-shadow: 0 -6px 20px rgba(0,0,0,.15); max-height: 60vh; overflow-y: auto;
+  transform: translateZ(0);
+  will-change: transform;
 }
 .menu-sheet[hidden] { display: none; }
 .menu-sheet a {
