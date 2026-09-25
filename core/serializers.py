@@ -3,6 +3,7 @@ from decimal import Decimal
 from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from rest_framework.exceptions import PermissionDenied
+from rest_framework.validators import UniqueValidator
 
 from .access import services
 from .models import (
@@ -24,13 +25,23 @@ from .permissions import can_give_manager_fund, is_admin
 
 
 class ProjectSerializer(serializers.ModelSerializer):
+    # Optional on create: ProjectViewSet.perform_create fills in a unique one when left blank.
+    code = serializers.CharField(
+        required=False, allow_blank=True, max_length=50,
+        validators=[UniqueValidator(queryset=Project.objects.all(), message='This code is already in use.')],
+    )
+    member_count = serializers.SerializerMethodField()
+
     class Meta:
         model = Project
         fields = [
             'id', 'name', 'code', 'plot_size', 'location', 'start_date',
-            'expected_completion_date', 'status', 'remarks', 'created_at', 'updated_at',
+            'expected_completion_date', 'status', 'remarks', 'member_count', 'created_at', 'updated_at',
         ]
         read_only_fields = ['created_at', 'updated_at']
+
+    def get_member_count(self, obj):
+        return obj.user_access.filter(role__name__in=('OWNER', 'MANAGER')).count()
 
 
 class ExpenseTransactionSerializer(serializers.ModelSerializer):

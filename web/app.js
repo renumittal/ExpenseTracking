@@ -19,7 +19,7 @@
   ];
   const SUPPLIER_TYPES = ['Electrical Material', 'Plumbing Material', 'Building Material', 'Saria / Steel',
     'Chokhat / Door', 'Wood / Timber', 'Paint / Hardware', 'Other'];
-  const STATUS_HI = { PLANNED: 'शुरू होना बाकी', ONGOING: 'काम चालू है', COMPLETED: 'काम पूरा हो गया' };
+  const STATUS_HI = { PLANNED: 'शुरू होना बाकी', ONGOING: 'काम चालू है', COMPLETED: 'काम पूरा हो गया', ARCHIVED: 'आर्काइव' };
   const MONTHS = ['जनवरी', 'फ़रवरी', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितंबर', 'अक्तूबर', 'नवंबर', 'दिसंबर'];
   const MSG = {
     problem: 'कुछ समस्या हुई। कृपया दोबारा प्रयास करें.',
@@ -72,7 +72,7 @@
   const canAny = perms => Authz.allows(perms, can);               // a screen may need one permission, any of several, or a rule
   const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
   const noProject = () => can('canCreateProject')
-    ? `<div class="empty"><div class="ico">🏠</div><h2>अभी कोई प्रोजेक्ट नहीं है</h2><p>No projects exist yet.</p></div><a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>`
+    ? `<div class="empty"><div class="ico">🏠</div><h2>अभी कोई प्रोजेक्ट नहीं है</h2><p>No projects exist yet.</p></div><a class="btn green" href="#/settings/new">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>`
     : '<div class="empty"><div class="ico">🏠</div><h2>आपको अभी कोई प्रोजेक्ट नहीं दिया गया है</h2><p>कृपया एडमिन से संपर्क करें.<br>No projects have been assigned to you yet.<br>Please contact the administrator.</p></div>';
 
   class AppError extends Error {
@@ -190,6 +190,7 @@
           </div>
           <div class="user-menu-divider"></div>
           ${can('canChangeOwnPassword') ? `<a class="user-menu-item" role="menuitem" href="#/profile">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}
+          ${can('canManagePermissions') ? `<a class="user-menu-item" role="menuitem" href="#/settings">⚙️ ${esc(I18n.t('settings'))}</a>` : ''}
           <button type="button" class="user-menu-item" role="menuitem" id="logoutBtn">🚪 ${esc(I18n.t('logout'))}</button>
         </div>
       </div>`;
@@ -358,7 +359,7 @@
       const shownFlash = projectFlash; projectFlash = '';
       $view.innerHTML = `<h1>🏗️ ${many ? 'मेरे प्रोजेक्ट' : 'मेरा प्रोजेक्ट'} <small>Projects</small></h1>` +
         (shownFlash ? `<div class="msg ok" role="status">${esc(shownFlash)}</div>` : '') +
-        (can('canCreateProject') ? '<a class="btn green" href="#/newproject">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>' : '') +
+        (can('canCreateProject') ? '<a class="btn green" href="#/settings/new">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>' : '') +
         (many ? '<p class="muted">जिस प्रोजेक्ट में काम करना है उसे छूइए.</p>' : '') +
         (state.projects.map((p, i) => `
           <${many ? 'button type="button"' : 'div'} class="card pick ${p.id === state.project.id ? 'on' : ''}" data-id="${p.id}">
@@ -1353,7 +1354,9 @@
   }
 
   async function screenResetPassword(id) {
-    chrome('users', can('canManageUsers') ? '#/users' : '#/members');
+    // Only reachable from the Users screen or a project's Members section in Settings, both
+    // super-admin only, so canManageUsers is always true here.
+    chrome('users', '#/users');
     loading();
     let target;
     try { target = (await loadPeople()).find(u => String(u.id) === String(id)); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
@@ -1409,100 +1412,166 @@
     userNote = '';
   }
 
-  async function screenMembers() {
-    chrome('members', '#/home');
-    if (!state.project) { $view.innerHTML = noProject(); return; }
-    const pid = state.project.id, url = `projects/${pid}/members/`;
+  // ================= Settings (super admin only): Projects | Users & access =================
+  // Reached only via the top-right user menu (renderUserbar), never the bottom nav -- see NAV in
+  // authz.js. "Users & access" is the existing screens at #/access/* (unchanged); this tab bar just
+  // links out to them so both live under one Settings shell.
+  const PROJECT_STATUSES = ['PLANNED', 'ONGOING', 'COMPLETED', 'ARCHIVED'];
+  const STATUS_KEY = { PLANNED: 'statusPlanned', ONGOING: 'statusOngoing', COMPLETED: 'statusCompleted', ARCHIVED: 'statusArchived' };
+  const settingsTabs = active => `<div class="ac-tabs">
+    <a href="#/settings" class="${active === 'projects' ? 'on' : ''}">🏗️ ${esc(I18n.t('projectsTab'))}</a>
+    <a href="#/access" class="${active === 'access' ? 'on' : ''}">🔐 ${esc(I18n.t('usersAccessTab'))}</a>
+  </div>`;
+
+  function screenSettings(arg) {
+    if (arg === 'new') return screenProjectForm(null);
+    if (arg && /^\d+$/.test(arg)) return screenProjectForm(Number(arg));
+    return screenProjectsList();
+  }
+
+  async function screenProjectsList() {
+    chrome('settings', '#/home');
     loading();
-    let data;
-    let candidates = [];
-    const load = async () => { [data, candidates] = await Promise.all([api(url), api(`users/?project=${pid}`)]); };
-    try { await load(); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    let projects;
+    try { projects = await api('projects/'); projects = projects.results || projects; }
+    catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    $view.innerHTML = `<h1>⚙️ ${esc(I18n.t('settings'))}</h1>` + settingsTabs('projects') +
+      `<a class="btn green" href="#/settings/new">➕ ${esc(I18n.t('newProject'))}</a>` +
+      (projects.length ? `<div style="overflow-x:auto"><table class="proj-table"><thead><tr>
+          <th>${esc(I18n.t('projectCode'))}</th><th>${esc(I18n.t('projectName'))}</th><th>${esc(I18n.t('location'))}</th>
+          <th>${esc(I18n.t('status'))}</th><th>${esc(I18n.t('membersCount'))}</th></tr></thead><tbody>
+        ${projects.map(p => `<tr data-id="${p.id}" tabindex="0">
+            <td data-label="${esc(I18n.t('projectCode'))}">${esc(p.code)}</td>
+            <td data-label="${esc(I18n.t('projectName'))}"><b>${esc(p.name)}</b></td>
+            <td data-label="${esc(I18n.t('location'))}">${esc(p.location || '—')}</td>
+            <td data-label="${esc(I18n.t('status'))}"><span class="status-pill ${esc(p.status)}">${esc(I18n.t(STATUS_KEY[p.status] || p.status))}</span></td>
+            <td data-label="${esc(I18n.t('membersCount'))}">${Number(p.member_count || 0)}</td>
+          </tr>`).join('')}</tbody></table></div>`
+        : `<div class="empty"><div class="ico">🏗️</div><p>${esc(I18n.t('noProjectsYet'))}</p></div>`);
+    $view.querySelectorAll('tr[data-id]').forEach(tr => {
+      const go = () => { location.hash = `#/settings/${tr.dataset.id}`; };
+      tr.onclick = go;
+      tr.onkeydown = e => { if (e.key === 'Enter') go(); };
+    });
+  }
+
+  async function screenProjectForm(id) {
+    chrome('settings', '#/settings');
+    const isNew = id == null;
+    let p = null, membersData = null, candidates = [];
+    if (!isNew) {
+      loading();
+      try {
+        p = await api(`projects/${id}/`);
+        [membersData, candidates] = await Promise.all([api(`projects/${id}/members/`), api(`users/?project=${id}`)]);
+      } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    }
     let note = '';
-    const draw = () => {
-      const members = data.members.map(m => ({ ...asPerson(m), role: WEB_ROLE[m.role] }));
-      $view.innerHTML = `<h1>🤝 सदस्य <small>Project Members</small></h1><p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
-        <div id="mmsg">${note}</div>` +
-        data.admins.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(Authz.ROLES.SUPER_ADMIN))}</span></div><div class="muted">सारे प्रोजेक्ट पर अधिकार <small>Access to all projects</small></div></div>`).join('') +
-        (members.map(u => {
-          const mine = u.id === state.user.id;
-          return `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div>
+
+    const membersSection = () => {
+      const members = membersData.members.map(m => ({ ...asPerson(m), role: WEB_ROLE[m.role] }));
+      return `<h2>${esc(I18n.t('projectMembers'))}</h2><div id="pmmsg">${note}</div>` +
+        membersData.admins.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(Authz.ROLES.SUPER_ADMIN))}</span></div></div>`).join('') +
+        (members.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div>
             <div class="muted">${esc(u.email)}</div>
-            ${mine ? '' : `<label for="mr-${u.id}">भूमिका बदलें <small>Change role</small></label>
-              <select id="mr-${u.id}" class="m-role" data-id="${u.id}" data-name="${esc(u.name)}"><option value="OWNER" ${u.role === Authz.ROLES.OWNER ? 'selected' : ''}>OWNER</option><option value="MANAGER" ${u.role === Authz.ROLES.MANAGER ? 'selected' : ''}>MANAGER</option></select>
-              <button type="button" class="btn line m-remove" data-id="${u.id}" data-name="${esc(u.name)}" style="min-height:52px;font-size:1rem">➖ हटाएँ <span class="sub">Remove</span></button>`}
-            ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`;
-        }).join('') || '<div class="empty">अभी कोई और सदस्य नहीं है.</div>') +
-        `<h2>➕ सदस्य जोड़ें <small>Add Member</small></h2>
-        <form id="addm" novalidate><label for="m-user">यूज़र चुनें <small>Select existing user</small></label>
-          <select id="m-user"><option value="">— चुनें / Select —</option>${candidates.map(u => `<option value="${u.id}">${esc(u.name)} · ${esc(u.username)} · ${esc(roleName(WEB_ROLE[u.role]))}</option>`).join('')}</select>
-          <label for="m-role">भूमिका <small>Role (from the user's account)</small></label>
+            <label for="mr-${u.id}">${esc(I18n.t('role'))}</label>
+            <select id="mr-${u.id}" class="m-role" data-id="${u.id}" data-name="${esc(u.name)}">
+              <option value="OWNER" ${u.role === Authz.ROLES.OWNER ? 'selected' : ''}>OWNER</option>
+              <option value="MANAGER" ${u.role === Authz.ROLES.MANAGER ? 'selected' : ''}>MANAGER</option>
+            </select>
+            <button type="button" class="btn line m-remove" data-id="${u.id}" data-name="${esc(u.name)}" style="min-height:52px;font-size:1rem">➖ ${esc(I18n.t('remove'))}</button>
+            ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}</div>`
+          ).join('') || `<div class="empty">${esc(I18n.t('noMembersYet'))}</div>`) +
+        `<h3>${esc(I18n.t('addMember'))}</h3>
+        <form id="addm" novalidate><label for="m-user">${esc(I18n.t('selectUser'))}</label>
+          <select id="m-user"><option value="">—</option>${candidates.map(u => `<option value="${u.id}">${esc(u.name)} · ${esc(u.username)} · ${esc(roleName(WEB_ROLE[u.role]))}</option>`).join('')}</select>
+          <label for="m-role">${esc(I18n.t('role'))}</label>
           <select id="m-role" disabled><option value="OWNER">OWNER</option><option value="MANAGER">MANAGER</option></select>
-          <button class="btn green" type="submit" id="m-add">➕ जोड़ें <span class="sub">ADD MEMBER</span></button></form>`;
-      const mm = document.getElementById('mmsg');
+          <button class="btn green" type="submit">➕ ${esc(I18n.t('addMember'))}</button></form>`;
+    };
+
+    const draw = () => {
+      $view.innerHTML = `<h1>⚙️ ${esc(I18n.t('settings'))}</h1>` + settingsTabs('projects') +
+        `<h2>${isNew ? esc(I18n.t('newProject')) : esc(p.name)}</h2>
+        <div id="pfmsg"></div>
+        <form id="pf" novalidate>
+          <label for="pf-name">${esc(I18n.t('projectName'))} *</label><input id="pf-name" type="text" value="${esc(isNew ? '' : p.name)}">
+          ${isNew
+            ? `<label for="pf-code">${esc(I18n.t('projectCode'))}</label><input id="pf-code" type="text" autocapitalize="characters"><div class="muted">${esc(I18n.t('codeAutoHint'))}</div>`
+            : `<label>${esc(I18n.t('projectCode'))}</label><div class="muted">${esc(p.code)}</div>`}
+          <label for="pf-loc">${esc(I18n.t('location'))}</label><input id="pf-loc" type="text" value="${esc(isNew ? '' : (p.location || ''))}">
+          <label for="pf-plot">${esc(I18n.t('plotSize'))}</label><input id="pf-plot" type="text" value="${esc(isNew ? '' : (p.plot_size || ''))}">
+          ${isNew ? '' : `
+          <label for="pf-status">${esc(I18n.t('status'))}</label>
+          <select id="pf-status">${PROJECT_STATUSES.map(k => `<option value="${k}" ${k === p.status ? 'selected' : ''}>${esc(I18n.t(STATUS_KEY[k]))}</option>`).join('')}</select>
+          <label for="pf-start">${esc(I18n.t('startDate'))}</label><input id="pf-start" type="date" value="${esc(p.start_date || '')}">
+          <label for="pf-end">${esc(I18n.t('expectedCompletion'))}</label><input id="pf-end" type="date" value="${esc(p.expected_completion_date || '')}">
+          <label for="pf-rem">${esc(I18n.t('remarks'))}</label><input id="pf-rem" type="text" value="${esc(p.remarks || '')}">`}
+          <button class="btn green" type="submit">💾 ${esc(I18n.t(isNew ? 'createProject' : 'save'))}</button>
+        </form>` +
+        (isNew ? '' : membersSection());
+      bindForm();
+      if (!isNew) bindMembers();
+    };
+
+    function bindForm() {
+      const f = document.getElementById('pf');
+      let saving = false;
+      f.onsubmit = async ev => {
+        ev.preventDefault();
+        if (saving) return;
+        const v = fid => document.getElementById(fid).value.trim();
+        const out = document.getElementById('pfmsg');
+        if (!v('pf-name')) { out.innerHTML = errBox(I18n.t('nameRequired')); return; }
+        saving = true;
+        const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
+        try {
+          if (isNew) {
+            const body = { name: v('pf-name'), location: v('pf-loc'), plot_size: v('pf-plot') };
+            const code = v('pf-code'); if (code) body.code = code.toUpperCase();
+            const created = await api('projects/', { method: 'POST', body });
+            state.me = null;                       // reload the project list from the server
+            await loadBasics();
+            location.hash = `#/settings/${created.id}`;
+            return;
+          }
+          p = await api(`projects/${id}/`, { method: 'PATCH', body: {
+            name: v('pf-name'), location: v('pf-loc'), plot_size: v('pf-plot'), status: document.getElementById('pf-status').value,
+            start_date: v('pf-start') || null, expected_completion_date: v('pf-end') || null, remarks: v('pf-rem') } });
+          note = `<div class="msg ok" role="status">✅ ${esc(I18n.t('saved'))}</div>`;
+          draw();
+        } catch (e) {
+          out.innerHTML = errBox(serverMsg(e) || friendly(e));
+        } finally { saving = false; }
+      };
+    }
+
+    function bindMembers() {
+      const url = `projects/${id}/members/`;
       const run = async (path, method, body, ok) => {
-        try { await api(path, { method, body }); note = `<div class="msg ok" role="status">${ok}</div>`; }
+        try { await api(path, { method, body }); note = `<div class="msg ok" role="status">✅ ${esc(ok)}</div>`; }
         catch (e) { note = errBox(serverMsg(e) || friendly(e)); }
-        try { await load(); } catch (e) { /* keep what is shown */ }
+        try { [membersData, candidates] = await Promise.all([api(url), api(`users/?project=${id}`)]); } catch (e) { /* keep what is shown */ }
         draw();
       };
       $view.querySelectorAll('.m-remove').forEach(b => b.onclick = () => {
-        if (confirm(`${b.dataset.name} को इस प्रोजेक्ट से हटाएँ?`)) run(`${url}${b.dataset.id}/`, 'DELETE', undefined, '✅ हटा दिया. Removed.');
+        confirmBox(I18n.t('confirmRemoveMember'), I18n.t('remove'), () => run(`${url}${b.dataset.id}/`, 'DELETE', undefined, I18n.t('memberRemoved')));
       });
       $view.querySelectorAll('.m-role').forEach(sel => sel.onchange = () => {
-        if (confirm(`${sel.dataset.name} की भूमिका ${sel.value} करें?`)) run(`${url}${sel.dataset.id}/`, 'PATCH', { role: sel.value }, '✅ भूमिका बदल गई. Role changed.');
+        if (confirm(`${sel.dataset.name} → ${sel.value}?`)) run(`${url}${sel.dataset.id}/`, 'PATCH', { role: sel.value }, I18n.t('roleChanged'));
         else draw();
       });
-      // Only an existing user chosen from the server's list can be added.
       const sel = document.getElementById('m-user');
       sel.onchange = () => { const u = candidates.find(x => x.id === Number(sel.value)); if (u && u.role) document.getElementById('m-role').value = u.role; };
       document.getElementById('addm').onsubmit = ev => {
         ev.preventDefault();
         const picked = candidates.find(x => x.id === Number(sel.value));
-        if (!picked) { mm.innerHTML = errBox('कृपया सूची से यूज़र चुनें.'); return; }
-        run(url, 'POST', { username: picked.username, role: picked.role || document.getElementById('m-role').value }, '✅ सदस्य जुड़ गया. Member added.');
+        if (!picked) { document.getElementById('pmmsg').innerHTML = errBox(I18n.t('selectUser')); return; }
+        run(url, 'POST', { username: picked.username, role: picked.role || document.getElementById('m-role').value }, I18n.t('memberAdded'));
       };
-    };
-    draw();
-  }
+    }
 
-  function screenSettings() {
-    chrome('settings', '#/home');
-    const p = state.project;
-    $view.innerHTML = `<h1>⚙️ सेटिंग <small>Settings</small></h1>` +
-      (p && can('canManageProjectSettings') ? `<h2>प्रोजेक्ट सेटिंग <small>Project Settings</small></h2>
-        <div class="card"><div class="muted">कोड: ${esc(p.code || '—')}</div>
-          <div id="psmsg"></div>
-          <form id="psf" novalidate>
-            <label for="ps-name">नाम <small>Name</small></label><input id="ps-name" type="text" value="${esc(p.name)}">
-            <label for="ps-loc">जगह <small>Location</small></label><input id="ps-loc" type="text" value="${esc(p.location || '')}">
-            <label for="ps-plot">प्लॉट <small>Plot size</small></label><input id="ps-plot" type="text" value="${esc(p.plot_size || '')}">
-            <label for="ps-status">स्थिति <small>Status</small></label>
-            <select id="ps-status">${Object.keys(STATUS_HI).map(k => `<option value="${k}" ${k === p.status ? 'selected' : ''}>${STATUS_HI[k]}</option>`).join('')}</select>
-            <label for="ps-start">शुरू की तारीख <small>Start date</small></label><input id="ps-start" type="date" value="${esc(p.start_date || '')}">
-            <label for="ps-end">पूरा होने की तारीख <small>Expected completion</small></label><input id="ps-end" type="date" value="${esc(p.expected_completion_date || '')}">
-            <label for="ps-rem">नोट <small>Remarks</small></label><input id="ps-rem" type="text" value="${esc(p.remarks || '')}">
-            <button class="btn green" type="submit">💾 सेव करें <span class="sub">SAVE</span></button></form></div>
-        ${can('canManageProjectMembers') ? '<a class="btn line" href="#/members">🤝 सदस्य <span class="sub">Project Members</span></a>' : ''}` : (can('canManageProjectSettings') ? noProject() : '')) +
-      (can('canManagePermissions') ? `<h2>🔐 Access Control</h2>
-        <a class="btn line" href="#/access">🔐 Access Control <span class="sub">Roles, user access, and check access</span></a>` : '') +
-      (can('canManageApplicationSettings') ? `<h2>ऐप सेटिंग <small>Application Settings</small></h2>
-        <div class="card muted">सिर्फ़ Super Admin को दिखता है. अभी कोई ऐप सेटिंग नहीं है.<br><small>Super Admin only. No application settings yet.</small></div>` : '');
-    const f = document.getElementById('psf');
-    if (f) f.onsubmit = async ev => {
-      ev.preventDefault();
-      const v = id => document.getElementById(id).value.trim(), out = document.getElementById('psmsg');
-      if (!v('ps-name')) { out.innerHTML = errBox('प्रोजेक्ट का नाम भरें.'); return; }
-      const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
-      try {
-        const saved = await api(`projects/${p.id}/`, { method: 'PATCH', body: {
-          name: v('ps-name'), location: v('ps-loc'), plot_size: v('ps-plot'), status: v('ps-status'),
-          start_date: v('ps-start') || null, expected_completion_date: v('ps-end') || null, remarks: v('ps-rem') } });
-        Object.assign(p, saved);
-        out.innerHTML = '<div class="msg ok" role="status">✅ सेव हो गया. <small>Saved.</small></div>';
-      } catch (e) { out.innerHTML = errBox(serverMsg(e) || friendly(e)); }
-      btn.disabled = false;
-    };
+    draw();
   }
 
   // ----- Role & Permissions: edits the same matrix that can() reads (authz.js); saved on the server. -----
@@ -1524,7 +1593,7 @@
       ? `<span class="lock">🔒 ${permDraft[d.key][r] ? 'Required' : 'OFF'}</span>`
       : `<button type="button" class="sw" role="switch" data-perm="${d.key}" data-role="${r}" aria-label="${esc(d.label)} — ${roleName(r)}"><i></i><b></b></button>`;
     const groupRows = (fn) => Authz.GROUPS.map(g => fn(g, defs.filter(d => d.group === g.id))).join('');
-    $view.innerHTML = `<h1>🔐 Role & Permissions</h1>
+    $view.innerHTML = `<h1>🔐 Role & Permissions</h1>` + settingsTabs('access') + `
       <div class="msg info">Saved on the server: every phone and computer uses these permissions. Project access (which projects a person can open) is separate and is not changed here.</div>
       <div id="pmsg">${flash === 'saved' ? '<div class="msg ok" role="status">Permissions updated successfully.</div>'
         : flash === 'reset' ? '<div class="msg ok" role="status">Permissions were reset to the default configuration.</div>'
@@ -1624,7 +1693,7 @@
     let users;
     try { users = await api('access/users/'); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
     const superCount = users.filter(u => u.is_superadmin).length;
-    $view.innerHTML = `<h1>🔐 Access Control</h1>
+    $view.innerHTML = `<h1>🔐 Access Control</h1>` + settingsTabs('access') + `
       <div class="msg info">Manage what each role can do, who can open which project, and check exactly what someone can do.</div>
       <div class="ac-cards">
         <a class="ac-card" href="#/permissions"><span class="ico">🧩</span><div><h3>Roles & Permissions</h3><p>What each role can do by default.</p></div></a>
@@ -1647,7 +1716,7 @@
   function drawAccessUsers(catalog) {
     const q = ac.search.toLowerCase();
     const list = ac.users.filter(u => !q || u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q));
-    $view.innerHTML = `<h1>👥 User Access</h1>
+    $view.innerHTML = `<h1>👥 User Access</h1>` + settingsTabs('access') + `
       <input class="ac-search" id="acq" placeholder="Search people..." value="${esc(ac.search)}" aria-label="Search people">
       <div class="ac-people" id="acPeople">${list.length ? list.map(u => `
         <button type="button" class="ac-person ${u.id === ac.selectedUserId ? 'on' : ''}" data-id="${u.id}">
@@ -1831,7 +1900,7 @@
   }
 
   function drawAccessCheck(catalog, users) {
-    $view.innerHTML = `<h1>🔍 Check Access</h1>
+    $view.innerHTML = `<h1>🔍 Check Access</h1>` + settingsTabs('access') + `
       <label for="chkUser" class="q">Pick a person</label>
       <select id="chkUser"><option value="">Choose...</option>${users.map(u => `<option value="${u.id}" ${u.id === ac.checkUserId ? 'selected' : ''}>${esc(u.name)}</option>`).join('')}</select>
       <div id="chkBody"></div>
@@ -1909,38 +1978,8 @@
     box.querySelector('#cb-cancel').focus();
   }
 
-  function screenNewProject() {
-    chrome('project', '#/project');
-    $view.innerHTML = `<h1>➕ नया प्रोजेक्ट <small>New Project</small></h1><div id="npmsg"></div>
-      <form id="npf" novalidate>
-        <label for="np-name">प्रोजेक्ट का नाम <small>Name</small> *</label><input id="np-name" type="text" autocomplete="off">
-        <label for="np-code">कोड <small>Code</small> *</label><input id="np-code" type="text" autocomplete="off" autocapitalize="characters">
-        <label for="np-loc">जगह <small>Location</small></label><input id="np-loc" type="text" autocomplete="off">
-        <label for="np-plot">प्लॉट साइज़ <small>Plot size</small></label><input id="np-plot" type="text" autocomplete="off">
-        <button class="btn green" type="submit">💾 प्रोजेक्ट बनाएँ <span class="sub">CREATE PROJECT</span></button></form>`;
-    let saving = false;
-    document.getElementById('npf').onsubmit = async ev => {
-      ev.preventDefault();
-      if (saving) return;
-      const out = document.getElementById('npmsg');
-      const val = id => document.getElementById(id).value.trim();
-      if (!val('np-name') || !val('np-code')) { out.innerHTML = errBox('कृपया नाम और कोड भरें.'); return; }
-      saving = true;
-      out.innerHTML = '';
-      try {
-        const p = await api('projects/', { method: 'POST', body: {
-          name: val('np-name'), code: val('np-code').toUpperCase(), location: val('np-loc'), plot_size: val('np-plot') } });
-        state.me = null;                       // reload the project list from the server
-        await loadBasics();
-        state.project = state.projects.find(x => x.id === p.id) || state.project;
-        if (state.project) store.set('projectId', state.project.id);
-        projectFlash = `प्रोजेक्ट बन गया: ${p.name} / Project created.`;
-        location.hash = '#/project';
-      } catch (e) {
-        out.innerHTML = errBox(e.status === 400 && serverMsg(e) ? serverMsg(e) : friendly(e));
-      } finally { saving = false; }
-    };
-  }
+  // Project creation now lives entirely in Settings -> Projects (screenProjectForm above, super admin
+  // only); see #/settings/new.
 
   // ----- Manager Fund: Owner --fund--> Manager --distribution--> Labour. All numbers come from the server. -----
   let fundFlash = '', fundManager = null, fundAll = false;      // fundManager = the manager shown; fundAll = the all-projects overview
@@ -2239,11 +2278,9 @@
       case 'project': return screenProject();
       case 'profile': return screenProfile();
       case 'users': return screenUsers();
-      case 'members': return screenMembers();
-      case 'settings': return screenSettings();
+      case 'settings': return screenSettings(arg);
       case 'permissions': return screenPermissions();
       case 'access': return screenAccess(arg, params);
-      case 'newproject': return screenNewProject();
       case 'fund': return screenFund();
       case 'givefund': return screenGiveFund();
       case 'distribute': return screenDistribute();

@@ -27,10 +27,7 @@ from .models import (
     AccessRole, ExpenseTransaction, Manager, ManagerFund, Owner, Project, Role, RolePermission, ScopeType,
     UserAccess,
 )
-from .permissions import (
-    CAN_MANAGE_PROJECT_MEMBERS, CAN_MANAGE_USERS, CAN_RESET_USER_PASSWORD, has_permission, is_admin,
-    owns_project,
-)
+from .permissions import CAN_MANAGE_USERS, CAN_RESET_USER_PASSWORD, has_permission, is_admin, owns_project
 
 User = get_user_model()
 
@@ -193,11 +190,20 @@ class UserListView(APIView):
 # ---------------------------------------------------------------------------
 
 def _members_project(request, pk):
+    """Read access: admin, or the OWNER of this project. Kept permissive -- besides the Settings ->
+    Projects members list, the reset-password picker (loadPeople in the web app) also reads this for
+    an owner resetting their own managers' passwords, which is unrelated to project administration."""
     project = Project.objects.filter(pk=pk).first()
     if project is None or not (is_admin(request.user) or owns_project(request.user, project)):
         raise NotFound('Project not found.')
-    # Project-aware: respects a per-project override, not just "does this role ever get this".
-    if not services.has_perm(request.user, CAN_MANAGE_PROJECT_MEMBERS, project):
+    return project
+
+
+def _members_manage_project(request, pk):
+    """Write access (add/remove/change role): project administration is a Settings -> Projects
+    action now, super admin only, not a per-project OWNER capability any more."""
+    project = _members_project(request, pk)
+    if not is_admin(request.user):
         raise PermissionDenied('You cannot manage project members.')
     return project
 
@@ -245,7 +251,7 @@ class ProjectMembersView(APIView):
 
     @transaction.atomic
     def post(self, request, pk):
-        project = _members_project(request, pk)
+        project = _members_manage_project(request, pk)
         who = (request.data.get('username') or '').strip()
         role_name = request.data.get('role')
         if not who:
@@ -274,7 +280,7 @@ class ProjectMemberDetailView(APIView):
     permission_classes = [IsAuthenticated]
 
     def _member(self, request, pk, user_id):
-        project = _members_project(request, pk)
+        project = _members_manage_project(request, pk)
         if user_id == request.user.id:
             raise ValidationError('You cannot change or remove yourself.')
         grant = UserAccess.objects.filter(

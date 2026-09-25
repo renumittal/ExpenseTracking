@@ -94,14 +94,16 @@
   const setMatrix = m => { current = normalize(m); };
 
   // ---------- which screen needs which permission (array = any of; no entry = any logged-in user) ----------
-  const SETTINGS_ANY = ['canManageProjectSettings', 'canManageApplicationSettings', 'canManagePermissions'];
   const REPORT_PERMISSION = { LABOUR: 'canViewLabour', SUPPLIER: 'canViewSuppliers', CONTRACTOR: 'canViewContractors', MISCELLANEOUS: 'canViewExpenses' };
   const ROUTE_PERMISSION = {
     add: canEnterAny, done: canEnterAny,
     list: 'canViewExpenses',
     reports: 'canViewReports',
-    project: 'canViewProjects', newproject: 'canCreateProject',
-    users: 'canManageUsers', members: 'canManageProjectMembers', settings: SETTINGS_ANY,
+    project: 'canViewProjects',
+    users: 'canManageUsers',
+    // Settings (Projects, and Users & access) is the super admin's screen only -- reachable from the
+    // top-right user menu, never the bottom nav. See renderUserbar()/NAV below.
+    settings: 'canManagePermissions',
     permissions: 'canManagePermissions', access: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
     fund: 'canViewManagerFund', givefund: 'canGiveManagerFund', distribute: 'canDistributeManagerFund',
   };
@@ -125,8 +127,8 @@
     { id: 'contractors', hash: '#/report/CONTRACTOR', icon: '🧱', hi: 'ठेकेदार', en: 'Contractors', perm: 'canViewContractors' },
     { id: 'fund',        hash: '#/fund',          icon: '💰', hi: 'फंड',       en: 'Manager Fund', perm: 'canViewManagerFund' },
     { id: 'users',       hash: '#/users',         icon: '👥', hi: 'यूज़र',      en: 'Users',       perm: 'canManageUsers' },
-    { id: 'members',     hash: '#/members',       icon: '🤝', hi: 'सदस्य',      en: 'Members',     perm: 'canManageProjectMembers' },
-    { id: 'settings',    hash: '#/settings',      icon: '⚙️', hi: 'सेटिंग',     en: 'Settings',    perm: SETTINGS_ANY },
+    // No Settings entry here on purpose: it is super-admin only and lives in the top-right user
+    // menu (renderUserbar in app.js), never the bottom nav / "Menu" sheet.
   ];
 
   // ---------- test users (UI only; no real login behind them) ----------

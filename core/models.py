@@ -21,6 +21,7 @@ class ProjectStatus(models.TextChoices):
     PLANNED = 'PLANNED', 'Planned'
     ONGOING = 'ONGOING', 'Ongoing'
     COMPLETED = 'COMPLETED', 'Completed'
+    ARCHIVED = 'ARCHIVED', 'Archived'
 
 
 class ExpenseCategory(models.TextChoices):

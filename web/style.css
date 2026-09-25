@@ -350,9 +350,28 @@ body.typing main { padding-bottom: 24px; }
 .ac-check-row .status.off { color: var(--muted); }
 .ac-check-row .why { color: var(--muted); font-size: .85rem; }
 .ac-tabs { display: flex; gap: 6px; overflow-x: auto; padding: 4px 0 10px; }
-.ac-tabs button { flex: 0 0 auto; font: inherit; font-weight: 700; padding: 8px 14px; min-height: 44px;
-  background: var(--card); color: var(--muted); border: 2px solid var(--line); border-radius: 999px; cursor: pointer; }
-.ac-tabs button.on { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+.ac-tabs button, .ac-tabs a { flex: 0 0 auto; font: inherit; font-weight: 700; padding: 8px 14px; min-height: 44px;
+  background: var(--card); color: var(--muted); border: 2px solid var(--line); border-radius: 999px; cursor: pointer;
+  text-decoration: none; display: inline-flex; align-items: center; }
+.ac-tabs button.on, .ac-tabs a.on { color: var(--blue); border-color: var(--blue); background: var(--blue-soft); }
+
+/* ---------------- Settings -> Projects ---------------- */
+.proj-table { width: 100%; border-collapse: collapse; }
+.proj-table th, .proj-table td { padding: 10px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.proj-table tbody tr { cursor: pointer; }
+.proj-table tbody tr:hover { background: var(--blue-soft); }
+.proj-table .status-pill { font-size: .8rem; font-weight: 700; border-radius: 999px; padding: 3px 10px;
+  background: var(--bg); color: var(--muted); border: 1px solid var(--line); white-space: nowrap; }
+.proj-table .status-pill.ARCHIVED { background: var(--red-soft); color: var(--red); }
+.proj-table .status-pill.ONGOING { background: var(--blue-soft); color: var(--blue); }
+.proj-table .status-pill.COMPLETED { background: var(--green-soft, var(--bg)); color: var(--green); }
+@media (max-width: 640px) {
+  .proj-table thead { display: none; }
+  .proj-table, .proj-table tbody, .proj-table tr, .proj-table td { display: block; width: 100%; }
+  .proj-table tr { border: 2px solid var(--line); border-radius: 12px; margin-bottom: 10px; padding: 8px 10px; }
+  .proj-table td { border-bottom: 0; padding: 4px 0; }
+  .proj-table td[data-label]::before { content: attr(data-label) ": "; font-weight: 700; color: var(--muted); }
+}
 
 .ac-grid-wrap { overflow-x: auto; }
 .ac-grid { border-collapse: collapse; width: 100%; font-size: .85rem; }

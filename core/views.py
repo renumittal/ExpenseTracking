@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from django.conf import settings
@@ -41,7 +42,6 @@ from .permissions import (
     CAN_ADD_EXPENSE,
     CAN_DELETE_EXPENSE,
     CAN_EDIT_EXPENSE,
-    CAN_MANAGE_PROJECT_SETTINGS,
     CAN_RECORD_LABOUR_PAYMENT,
     CAN_UPLOAD_BILL,
     CAN_VIEW_BILL,
@@ -74,6 +74,18 @@ from .serializers import (
     ProjectSerializer,
     SupplierSerializer,
 )
+
+
+def _unique_project_code(name):
+    """A short, unique code derived from `name` (e.g. 'Green Valley Phase 2' -> 'GREENVALL'), for a
+    create that left `code` blank. Falls back to 'PROJ' if the name has no letters/digits, then
+    appends a counter until it is unique."""
+    base = re.sub(r'[^A-Z0-9]', '', name.upper())[:9] or 'PROJ'
+    code, n = base, 1
+    while Project.objects.filter(code=code).exists():
+        n += 1
+        code = f'{base}{n}'
+    return code
 
 
 # ---------------------------------------------------------------------------
@@ -186,8 +198,11 @@ class ProjectPeopleView(APIView):
 
 class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.ReadOnlyModelViewSet):
     """
-    Admin: all projects (and the only one who can create). Owner: only projects they hold an OWNER-role grant on.
-    PATCH (canManageProjectSettings, on a project you own) edits the project's details; its code never changes.
+    Read: admin sees every project; an owner only the projects they hold an OWNER-role grant on.
+    Create/update (including archiving, a status change): super admin only -- project administration
+    lives entirely in Settings -> Projects now (see people.py's project-members endpoints, gated the
+    same way). A project's code never changes once created; if none is given on create, one is
+    generated (see perform_create).
     """
 
     serializer_class = ProjectSerializer
@@ -196,7 +211,7 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_permissions(self):
-        if self.action == 'create':
+        if self.action in ('create', 'update', 'partial_update'):
             return [AdminOnly()]
         return super().get_permissions()
 
@@ -206,10 +221,11 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
             return Project.objects.all()
         return services.projects_with_role(user, 'OWNER')
 
+    def perform_create(self, serializer):
+        code = (serializer.validated_data.get('code') or '').strip().upper()
+        serializer.save(code=code or _unique_project_code(serializer.validated_data.get('name', '')))
+
     def perform_update(self, serializer):
-        user = self.request.user
-        if not services.has_perm(user, CAN_MANAGE_PROJECT_SETTINGS, serializer.instance):
-            raise PermissionDenied('You cannot change this project\'s settings.')
         serializer.validated_data.pop('code', None)
         serializer.save()
 
