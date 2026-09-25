@@ -915,6 +915,7 @@
       ownerId: state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '') };
     let saving = false;
     $view.innerHTML = `
+      <div class="add-expense">
       <h1>➕ ${L('खर्च डालें', 'Add Expense')}</h1>
       <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
       ${state.projects.length > 1 && can('canViewProjects') ? `<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 ${L('प्रोजेक्ट बदलें', 'Change Project')}</a>` : ''}
@@ -938,7 +939,8 @@
       <div class="step"><label for="note"><span class="num">6</span>${L('कोई जानकारी?', 'Note (optional)')}</label>
         <textarea id="note" placeholder="${L('जैसे: सीमेंट के 10 बैग', 'e.g. 10 bags of cement')}"></textarea></div>
       <div id="bottom"></div>
-      <button class="btn green big" id="save" type="button">💾 ${L('खर्च सेव करें', 'SAVE EXPENSE')}</button>`;
+      <button class="btn green big" id="save" type="button">💾 ${L('खर्च सेव करें', 'SAVE EXPENSE')}</button>
+      </div>`;
 
     const $ = id => document.getElementById(id);
     const setErr = (id, text) => { $(id).textContent = text || ''; $(id).parentElement.classList.toggle('bad', !!text); };
