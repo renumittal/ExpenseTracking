@@ -109,7 +109,11 @@
     // top-right user menu, never the bottom nav. See renderUserbar()/NAV below.
     settings: 'canManagePermissions',
     permissions: 'canManagePermissions', access: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
-    fund: 'canViewManagerFund', givefund: 'canGiveManagerFund', distribute: 'canDistributeManagerFund',
+    fund: 'canViewManagerFund', givefund: 'canGiveManagerFund',
+    // Pay Labour: reachable by a fund-backed manager (canDistributeManagerFund) OR anyone who can
+    // add a Labour expense directly (canRecordLabourPayment, e.g. an Owner with no fund) -- the one
+    // screen picks its own mode internally (see screenPayLabour in app.js).
+    distribute: ['canDistributeManagerFund', 'canRecordLabourPayment'],
     managers: 'canViewProjectFunds',
   };
   const reportPermission = key => REPORT_PERMISSION[key] || 'canViewReports';

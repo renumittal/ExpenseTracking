@@ -254,25 +254,6 @@ a.card { display: block; color: inherit; text-decoration: none; }
 .empty .ico { font-size: 3.5rem; }
 .spinner { text-align: center; padding: 48px 0; color: var(--muted); font-weight: 700; }
 
-/* Labour payment entry: searchable multi-select with one amount per labourer */
-.lab-bar { display: flex; gap: 10px; align-items: stretch; }
-.lab-bar input { flex: 1; min-width: 0; }
-.lab-bar .btn { width: auto; margin: 0; min-height: 64px; padding: 8px 14px; font-size: 1.05rem; flex: 0 0 auto; }
-.lab-inact { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-weight: 600; }
-.lab-inact input, .lab-chk { width: 28px; height: 28px; flex: 0 0 auto; accent-color: var(--green); }
-.lab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 12px; margin: 8px 0; background: var(--card); border: 2px solid var(--line); border-radius: var(--radius); }
-.lab-row[hidden] { display: none; }
-.lab-row.on { border-color: var(--green); background: #eef8f1; }
-.lab-row.bad-row { border-color: var(--red); background: var(--red-soft); }
-.lab-pick { display: flex; align-items: center; gap: 12px; flex: 1 1 10em; min-height: 52px; cursor: pointer; }
-.lab-name { font-size: 1.15rem; font-weight: 700; }
-.lab-last { display: block; font-size: .85rem; font-weight: 400; color: var(--muted); }
-.lab-amt { position: relative; flex: 0 0 9em; }
-.lab-amt span { position: absolute; left: 12px; top: 10px; font-size: 1.2rem; font-weight: 700; color: var(--muted); }
-.lab-amt input { min-height: 52px; padding: 8px 12px 8px 34px; font-size: 1.3rem; font-weight: 700; }
-.lab-stop { flex: 1 0 100%; text-align: left; padding: 4px 0; font: inherit; font-size: .9rem; color: var(--muted); background: none; border: 0; text-decoration: underline; cursor: pointer; }
-.lab-total { margin-top: 12px; border-color: var(--blue); background: var(--blue-soft); align-items: center; }
-
 /* Add Expense: tighter vertical rhythm so the Labour list (search + rows + total + date +
    paid-by + note) fits with less scrolling on a phone. Scoped to this screen only -- .step,
    .choice, .card etc. are shared classes used at their roomier default size elsewhere. */
@@ -288,31 +269,29 @@ a.card { display: block; color: inherit; text-decoration: none; }
 .add-expense .quick { margin-top: 8px; }
 .add-expense .quick .choice { min-height: 48px; }
 .add-expense textarea { min-height: 76px; }
-.add-expense .lab-bar { gap: 8px; }
-.add-expense .lab-bar input, .add-expense .lab-bar .btn { min-height: 56px; }
-.add-expense .lab-inact { margin: 8px 0; }
-.add-expense .lab-row { padding: 8px 10px; margin: 6px 0; }
-.add-expense .lab-pick { min-height: 44px; gap: 10px; flex: 1 1 8em; min-width: 0; }
-.add-expense .lab-name { min-width: 0; }
-.add-expense .lab-amt { flex: 0 0 6.5em; }
-.add-expense .lab-amt input { min-height: 48px; padding-left: 30px; }
-.add-expense .lab-amt span { top: 12px; }
-.add-expense .lab-total { margin-top: 8px; padding: 12px 16px; }
 
-/* Distribute to Labour: the single place a manager pays labour from their fund (see screenAdd's
-   Labour redirect) -- same inline-amount-box / tighter-spacing treatment as .add-expense above,
-   since this screen now carries that whole job on its own. */
-.distribute-labour .card { padding: 12px 16px; margin: 8px 0; }
-.distribute-labour .tot-box .big-total { font-size: 1.7rem; }
-.distribute-labour label { display: block; margin: 10px 0 6px; font-weight: 700; }
-.distribute-labour .q { font-size: 1.1rem; font-weight: 700; margin: 10px 0 6px; }
-.distribute-labour .lab-inact { margin: 8px 0; }
-.distribute-labour .lab-row { padding: 8px 10px; margin: 6px 0; }
-.distribute-labour .lab-pick { min-height: 44px; gap: 10px; flex: 1 1 8em; min-width: 0; }
-.distribute-labour .lab-name { min-width: 0; }
-.distribute-labour .lab-amt { flex: 0 0 6.5em; }
-.distribute-labour .lab-amt input { min-height: 48px; padding-left: 30px; }
-.distribute-labour .lab-amt span { top: 12px; }
+/* Pay Labour (screenPayLabour, #/distribute): the one screen every role pays a labourer through --
+   same inline-amount-box / tighter-spacing treatment as .add-expense above. All labour-row styling
+   lives here now; Add Expense itself never renders a .lab-row (Labour redirects here instead). */
+.pay-labour .card { padding: 12px 16px; margin: 8px 0; }
+.pay-labour .tot-box .big-total { font-size: 1.7rem; }
+.pay-labour label { display: block; margin: 10px 0 6px; font-weight: 700; }
+.pay-labour .q { font-size: 1.1rem; font-weight: 700; margin: 10px 0 6px; }
+.pay-labour .lab-bar { display: flex; gap: 8px; align-items: stretch; margin: 10px 0 6px; }
+.pay-labour .lab-bar input { flex: 1; min-width: 0; margin: 0; }
+.pay-labour .lab-bar .btn { width: auto; margin: 0; min-height: 56px; padding: 8px 14px; font-size: 1.05rem; flex: 0 0 auto; }
+.pay-labour .lab-inact { display: flex; align-items: center; gap: 10px; margin: 8px 0; font-weight: 600; }
+.pay-labour .lab-inact input, .pay-labour .lab-chk { width: 28px; height: 28px; flex: 0 0 auto; accent-color: var(--green); }
+.pay-labour .lab-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 10px; margin: 6px 0; background: var(--card); border: 2px solid var(--line); border-radius: var(--radius); }
+.pay-labour .lab-row.on { border-color: var(--green); background: #eef8f1; }
+.pay-labour .lab-pick { display: flex; align-items: center; gap: 10px; flex: 1 1 8em; min-height: 44px; min-width: 0; cursor: pointer; }
+.pay-labour .lab-name { font-size: 1.15rem; font-weight: 700; min-width: 0; }
+.pay-labour .lab-last { display: block; font-size: .85rem; font-weight: 400; color: var(--muted); }
+.pay-labour .lab-amt { position: relative; flex: 0 0 6.5em; }
+.pay-labour .lab-amt span { position: absolute; left: 12px; top: 12px; font-size: 1.2rem; font-weight: 700; color: var(--muted); }
+.pay-labour .lab-amt input { min-height: 48px; padding: 8px 12px 8px 30px; font-size: 1.3rem; font-weight: 700; }
+.pay-labour .lab-stop { flex: 1 0 100%; text-align: left; padding: 4px 0; font: inherit; font-size: .9rem; color: var(--muted); background: none; border: 0; text-decoration: underline; cursor: pointer; }
+.pay-labour .lab-total { margin-top: 8px; border-color: var(--blue); background: var(--blue-soft); align-items: center; }
 .modal { position: fixed; inset: 0; z-index: 30; display: flex; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.45); overflow-y: auto; }
 .modal-box { width: 100%; max-width: 600px; max-height: 100%; overflow-y: auto; padding: 20px 16px calc(20px + env(safe-area-inset-bottom)); background: var(--bg); border-radius: var(--radius) var(--radius) 0 0; }
 .modal-box label { display: block; margin: 14px 0 6px; font-weight: 700; }

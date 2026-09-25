@@ -899,16 +899,12 @@
     if (!allowedCats().length && !can('canGiveManagerFund')) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
 
     const cats = allowedCats();
-    // A manager's only legitimate way to pay labour is out of their own ManagerFund (balance-checked,
-    // no owner/payment-mode to pick -- both come from the fund) -- never as a bare, unchecked expense.
-    // Rather than maintain that as a second, redundant "pay labour" implementation here, send anyone
-    // who holds canDistributeManagerFund straight to #/distribute for Labour before doing any of this
-    // screen's own loading; Owners (who have no fund to distribute from, and pay labour directly out
-    // of project cash with zero effect on any manager's balance) keep the normal category picker/local
-    // form below, unchanged.
-    const managerFundLabour = can('canDistributeManagerFund');
+    // Labour has exactly one implementation, screenPayLabour() (#/distribute) -- it picks its own
+    // fund-backed-vs-direct mode internally by role, so Add Expense never renders a Labour form of
+    // its own. Anyone selecting Labour here (a direct pick, the single-category auto-select below, or
+    // the #/add?tab=labour deep link) is sent straight there before this screen loads anything else.
     const wantCat = TAB_TO_CAT[((params && params.get('tab')) || '').toLowerCase()];
-    if (managerFundLabour && (wantCat === 'LABOUR' || (cats.length === 1 && cats[0].key === 'LABOUR'))) {
+    if (wantCat === 'LABOUR' || (cats.length === 1 && cats[0].key === 'LABOUR')) {
       location.hash = '#/distribute';
       return;
     }
@@ -947,7 +943,7 @@
         ? `<div class="step cat-fixed" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')} <b>${catLabel(cats[0])}</b></div>
         <div class="field-error" id="e-cat"></div></div>`
         : `<div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
-        <div class="choices">${cats.map(c => c.key === 'LABOUR' && managerFundLabour
+        <div class="choices">${cats.map(c => c.key === 'LABOUR'
           ? `<a class="choice" href="#/distribute"><span class="ico">${c.icon}</span>${catLabel(c)}</a>`
           : `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
         <div class="field-error" id="e-cat"></div></div>`}
@@ -970,148 +966,9 @@
     const $ = id => document.getElementById(id);
     const setErr = (id, text) => { $(id).textContent = text || ''; $(id).parentElement.classList.toggle('bad', !!text); };
 
-    // ----- Labour: pick several labourers of this project, one amount each -----
-    const lab = { showInactive: false, lists: {}, on: new Set(), amt: {}, q: '' };
-    let labGen = 0;   // bumped whenever the labour panel is (re)built or left, so stale async work stops
-    const labAlive = gen => gen === labGen && f.cat === 'LABOUR' && !!document.getElementById('llist');
-    const labKinds = () => (lab.showInactive ? ['active', 'inactive'] : ['active']);
-    async function labLoad(kind) {
-      if (!lab.lists[kind]) lab.lists[kind] = await api(`project-labour/?project=${state.project.id}&status=${kind}`);
-      return lab.lists[kind];
-    }
-    // Money as whole paise (integers) so totals never pick up floating-point errors.
-    const paise = t => {
-      const m = /^(\d*)(?:\.(\d{0,2}))?$/.exec(String(t || '').trim());
-      return m ? Number(m[1] || 0) * 100 + Number((m[2] || '').padEnd(2, '0') || 0) : 0;
-    };
-    const paiseText = c => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}`;
-    const labRows = () => {
-      const rows = lab.lists.active.slice();
-      (lab.lists.inactive || []).forEach(r => { if (lab.showInactive || lab.on.has(r.labour)) rows.push(r); });
-      return rows;
-    };
-    const labTotal = () => [...lab.on].reduce((sum, id) => sum + paise(lab.amt[id]), 0);
-    function labUpdate() {
-      if (!$('ltotal')) return;
-      const hiddenSel = document.querySelectorAll('#llist .lab-row.on[hidden]').length;
-      $('ltotal').textContent = money(labTotal() / 100);
-      $('lcount').textContent = lab.on.size ? `(${lab.on.size} ${L('चुने', 'selected')}${hiddenSel ? ` · ${hiddenSel} ${L('खोज में छिपे', 'hidden by search')}` : ''})` : '';
-    }
-    // Search only hides rows; it never clears a selection or an amount.
-    function labFilter() {
-      const q = lab.q.trim().toLowerCase();
-      $('llist').querySelectorAll('.lab-row').forEach(r => { r.hidden = !!q && !r.dataset.name.includes(q); });
-      labUpdate();
-    }
-    function labDrawRows() {
-      const rows = labRows();
-      if (!$('llist')) return;
-      $('llist').innerHTML = rows.length ? rows.map(r => `
-        <div class="lab-row ${lab.on.has(r.labour) ? 'on' : ''}" data-id="${r.labour}" data-name="${esc((r.name + ' ' + r.mobile).toLowerCase())}">
-          <label class="lab-pick"><input type="checkbox" class="lab-chk" ${lab.on.has(r.labour) ? 'checked' : ''}>
-            <span class="lab-name">${esc(r.name)}${r.type ? ` <small>${esc(r.type)}</small>` : ''}
-              ${r.is_active ? '' : `<span class="pill warn">${L('काम बंद', 'Inactive')}</span>`}
-              ${r.last_paid ? `<span class="lab-last">Last paid: ${shortDate(r.last_paid)}</span>` : ''}</span></label>
-          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0" aria-label="${esc(r.name)} ${L('राशि', 'amount')}" value="${esc(lab.amt[r.labour] || '')}"></span>
-          ${r.is_active && can('canManageLabour') ? `<button type="button" class="lab-stop">${L('काम बंद करें', 'Mark inactive')}</button>` : ''}
-        </div>`).join('')
-        : `<div class="msg info">${L('इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है। "नया मज़दूर" जोड़िए या पुराने मज़दूर दिखाइए.', 'No active labour on this project yet. Add a new labour, or show inactive ones.')}</div>`;
-      labFilter();
-    }
-    function labModal(gen) {
-      const box = document.createElement('div');
-      box.className = 'modal';
-      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="${L('नया मज़दूर', 'Add Labour')}" novalidate>
-        <h2 style="margin-top:0">➕ ${L('नया मज़दूर', 'Add Labour')}</h2>
-        <div id="m-err"></div>
-        <div id="m-fields">
-          <label for="m-name">${L('नाम / मिस्त्री', 'Name')} *</label>
-          <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
-          <label for="m-mob">${L('मोबाइल नंबर', 'Mobile')} *</label>
-          <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
-          <label for="m-type">${L('काम का प्रकार', 'Type (optional)')}</label>
-          <input id="m-type" type="text" autocomplete="off" placeholder="${L('जैसे: मिस्त्री, हेल्पर', 'e.g. Mason, Helper')}" enterkeyhint="next">
-          <label for="m-rem">${L('जानकारी', 'Remarks (optional)')}</label>
-          <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
-          <button class="btn green" type="submit" id="m-save">💾 ${L('सेव करें', 'SAVE')}</button>
-        </div>
-        <div id="m-dup" hidden></div>
-        <button class="btn line" type="button" id="m-cancel">${L('रद्द करें', 'Cancel')}</button>
-      </form>`;
-      document.body.appendChild(box);
-      const m = id => box.querySelector('#' + id);
-      const close = () => {
-        box.remove();
-        document.removeEventListener('keydown', onKey);
-        window.removeEventListener('hashchange', close);
-      };
-      const onKey = e => { if (e.key === 'Escape') close(); };
-      document.addEventListener('keydown', onKey);
-      window.addEventListener('hashchange', close);      // Back / navigation must not leave the overlay behind
-      m('m-cancel').onclick = close;
-      m('m-name').focus();
+    // (Labour has its own dedicated screen, screenPayLabour() at #/distribute -- see the redirect
+    // near the top of this function. Nothing here handles the LABOUR category.)
 
-      // The labour now exists on the server; show it in the list and select it.
-      async function added(r) {
-        close();
-        if (!labAlive(gen)) return;
-        try {
-          lab.on.add(r.labour);
-          lab.q = ''; if ($('lq')) $('lq').value = '';
-          if (lab.lists.active) {
-            ['active', 'inactive'].forEach(k => { if (lab.lists[k]) lab.lists[k] = lab.lists[k].filter(x => x.labour !== r.labour); });
-            lab.lists.active.unshift(r);
-            labDrawRows();
-          } else {
-            lab.lists = {};            // the first load had failed: reload it, the new labour is included
-            await drawLabour();
-          }
-          if ($('lnote')) $('lnote').innerHTML = r.reused ? `<div class="msg info">${L('यह मज़दूर पहले से था — इस प्रोजेक्ट में चालू कर दिया.', 'This labour already existed — marked active on this project.')}</div>` : '';
-          const row = document.querySelector(`#llist .lab-row[data-id="${r.labour}"]`);
-          if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('.lab-a').focus(); }
-        } catch (err) { console.error('after add labour', err); }
-      }
-
-      // Same name, different mobile: ask "is this the same person?" (only when there is such a match).
-      function askSame(cands, send) {
-        m('m-fields').hidden = true;
-        const dup = m('m-dup');
-        dup.hidden = false;
-        dup.innerHTML = `<h2 style="margin-top:0">${L('क्या यह वही मज़दूर है?', 'Is this the same person?')}</h2>` +
-          cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
-            <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
-            <div class="muted">${c.last_paid ? 'Last paid: ' + shortDate(c.last_paid) : 'Never paid'}</div>
-            <button class="btn green" type="button" data-use="${c.labour}" style="margin-bottom:0">✔ ${L('यही है', 'Use this Labour')}</button></div>`).join('') +
-          `<button class="btn line" type="button" id="m-new">➕ ${L('अलग व्यक्ति है', 'Different Person')}</button>`;
-        dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_labour: Number(b.dataset.use) }));
-        m('m-new').onclick = () => send({ confirm_new: true });
-      }
-
-      box.querySelector('form').onsubmit = async ev => {
-        ev.preventDefault();
-        const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
-        if (!name) { m('m-err').innerHTML = errBox(L('कृपया नाम भरें.', 'Please enter a name.')); m('m-name').focus(); return; }
-        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox(L('कृपया सही मोबाइल नंबर भरें.', 'Please enter a valid mobile number.')); m('m-mob').focus(); return; }
-        const send = async extra => {
-          const btns = box.querySelectorAll('button');
-          btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
-          m('m-err').innerHTML = '';
-          let r;
-          try {
-            r = await api('project-labour/', { method: 'POST', body: {
-              project: state.project.id, name, mobile, type: m('m-type').value.trim(), remarks: m('m-rem').value.trim(), ...extra } });
-          } catch (e) {
-            btns.forEach(b => { b.disabled = false; });
-            if (e.status === 409 && e.data && e.data.code === 'possible_duplicate') { askSame(e.data.candidates || [], send); return; }
-            m('m-fields').hidden = false; m('m-dup').hidden = true;
-            m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
-            return;
-          }
-          await added(r);
-        };
-        send({});
-      };
-    }
     // ----- Contractor: pick a contract of this project, or add a contractor + contract -----
     function contractorModal() {
       const box = document.createElement('div');
@@ -1203,7 +1060,7 @@
       }
 
       async function saveContract() {
-        const work = m('c-work').value.trim(), cents = paise(m('c-amt').value);
+        const work = m('c-work').value.trim(), cents = toPaise(m('c-amt').value);
         const bad = (id, text) => { m('m-err').innerHTML = errBox(text); m(id).focus(); };
         if (!work) return bad('c-work', L('कृपया काम का विवरण भरें.', 'Please enter the work description.'));
         if (!(cents > 0)) return bad('c-amt', L('कृपया ठेका राशि भरें (0 से ज़्यादा).', 'Please enter a contract amount greater than zero.'));
@@ -1216,7 +1073,7 @@
         try {
           made = await api('contractor-contracts/', { method: 'POST', body: {
             project: state.project.id, contractor: contractor.id, work_description: work,
-            contract_amount: paiseText(cents), contract_date: m('c-date').value, remarks: m('c-rem').value.trim() } });
+            contract_amount: fromPaise(cents), contract_date: m('c-date').value, remarks: m('c-rem').value.trim() } });
         } catch (e) {
           btns.forEach(b => { b.disabled = false; });
           m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
@@ -1350,80 +1207,9 @@
       if ($('e-who')) setErr('e-who', '');
     }
 
-    async function drawLabour() {
-      const gen = ++labGen;
-      $('s-who').innerHTML = `
-        <div class="q"><span class="num">3</span>${L('किस मज़दूर को दिया?', 'Labour Payments')} <small id="lcount"></small></div>
-        <div class="lab-bar">
-          <input id="lq" type="text" autocomplete="off" enterkeyhint="search" placeholder="🔍 ${L('मज़दूर खोजिए', 'Search Labour')}" value="${esc(lab.q)}">
-          ${can('canManageLabour') ? `<button type="button" class="btn line" id="ladd">➕ ${L('नया', 'Add Labour')}</button>` : ''}
-        </div>
-        <label class="lab-inact"><input type="checkbox" id="linact" ${lab.showInactive ? 'checked' : ''}> ${L('पुराने / काम बंद मज़दूर भी दिखाएँ', 'Show Inactive')}</label>
-        <div id="lnote"></div>
-        <div id="llist"><div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div></div>
-        <div class="card row lab-total"><span>${L('कुल मज़दूरी', 'Total Labour Payment')}</span><span class="amount" id="ltotal">${money(0)}</span></div>
-        <div><div class="field-error" id="e-lab"></div></div>`;
-      $('lq').oninput = e => { lab.q = e.target.value; labFilter(); };
-      if ($('ladd')) $('ladd').onclick = () => labModal(gen);
-      $('linact').onchange = async e => {
-        lab.showInactive = e.target.checked;
-        try { await labLoad('inactive'); if (labAlive(gen)) labDrawRows(); }
-        catch (err) { if (labAlive(gen)) $('llist').innerHTML = errBox(friendly(err)); }
-      };
-      const list = $('llist');
-      list.onchange = e => {
-        if (!e.target.classList.contains('lab-chk')) return;
-        const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
-        if (e.target.checked) { lab.on.add(id); row.classList.add('on'); row.querySelector('.lab-a').focus(); }
-        else { lab.on.delete(id); row.classList.remove('on'); }
-        row.classList.remove('bad-row');
-        labUpdate();
-      };
-      list.oninput = e => {
-        if (!e.target.classList.contains('lab-a')) return;
-        const row = e.target.closest('.lab-row'), id = Number(row.dataset.id);
-        const [whole, ...rest] = e.target.value.replace(/[^0-9.]/g, '').split('.');
-        e.target.value = whole.slice(0, 9) + (rest.length ? '.' + rest.join('').slice(0, 2) : '');
-        lab.amt[id] = e.target.value;
-        if (e.target.value) { lab.on.add(id); row.classList.add('on'); row.querySelector('.lab-chk').checked = true; }
-        row.classList.remove('bad-row');
-        setErr('e-lab', '');
-        labUpdate();
-      };
-      list.onkeydown = e => {
-        if (e.key !== 'Enter' || !e.target.classList.contains('lab-a')) return;
-        e.preventDefault();
-        let row = e.target.closest('.lab-row').nextElementSibling;
-        while (row && row.hidden) row = row.nextElementSibling;
-        if (row) row.querySelector('.lab-a').focus(); else e.target.blur();
-      };
-      list.onclick = async e => {
-        const btn = e.target.closest('.lab-stop');
-        if (!btn) return;
-        const row = btn.closest('.lab-row'), id = Number(row.dataset.id);
-        const link = (lab.lists.active || []).find(x => x.labour === id);
-        if (!link || !confirm(L(`${link.name} को इस प्रोजेक्ट में "काम बंद" करें?\nपुराना हिसाब बना रहेगा.`, `Mark ${link.name} inactive on this project?\nPast records will stay.`))) return;
-        try {
-          await api(`project-labour/${link.id}/set-active/`, { method: 'POST', body: { is_active: false } });
-          lab.lists.active = lab.lists.active.filter(x => x !== link);
-          if (lab.lists.inactive) lab.lists.inactive.push({ ...link, is_active: false });
-          lab.on.delete(id); delete lab.amt[id];
-          if (labAlive(gen)) labDrawRows();
-        } catch (err) { if (labAlive(gen)) $('lnote').innerHTML = errBox(serverMsg(err) || friendly(err)); }
-      };
-      try {
-        await labLoad('active');
-        if (lab.showInactive) await labLoad('inactive');
-        if (labAlive(gen)) labDrawRows();
-      } catch (err) { if (labAlive(gen)) $('llist').innerHTML = errBox(friendly(err)); }
-    }
-
     function drawWho() {
       const cat = f.cat;
       let html = '';
-      $('s-amt').hidden = cat === 'LABOUR';   // labour has one amount per person instead
-      if (cat !== 'LABOUR') labGen++;         // stop any labour load still in flight
-      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = ''; drawLabour(); drawHistory(); return; }
       if (!cat) {
         html = `<div class="q"><span class="num">3</span>${L('किसको दिया?', 'Name')}</div><p class="muted">${L('पहले ऊपर बताइए कि किस चीज़ का खर्च है.', 'First choose above what this expense is for.')}</p>`;
       } else if (cat === 'CONTRACTOR') {
@@ -1443,7 +1229,7 @@
           <input id="material" type="text" autocomplete="off" autocapitalize="sentences" placeholder="${L('जैसे: सीमेंट, रेत', 'e.g. Cement, Sand')}" enterkeyhint="next">
           <div class="field-error" id="e-who"></div>`;
       } else {
-        const label = cat === 'LABOUR' ? L('किस मज़दूर को दिया?', 'Name') : cat === 'SUPPLIER' ? L('किस सप्लायर को दिया?', 'Name') : L('किसको दिया?', 'Name');
+        const label = cat === 'SUPPLIER' ? L('किस सप्लायर को दिया?', 'Name') : L('किसको दिया?', 'Name');
         html = `<label for="name"><span class="num">3</span>${label}</label>
           <input id="name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next" placeholder="${L('नाम लिखिए', 'Enter name')}">
           <div class="suggest" id="sug"></div><div class="hint" id="newhint"></div><div class="field-error" id="e-who"></div>` +
@@ -1478,7 +1264,6 @@
           historyCache[key] = await api(`expense-transactions/?project=${state.project.id}&category=${f.cat}&status=ACTIVE`);
         }
         const rows = historyCache[key];
-        const labourName = id => (names.labour.find(x => x.id === id) || {}).name || '';
         const byDate = {};
         rows.forEach(r => { (byDate[r.expense_date] = byDate[r.expense_date] || []).push(r); });
         const dates = Object.keys(byDate).sort().reverse();
@@ -1486,7 +1271,7 @@
           const list = byDate[d];
           const total = list.reduce((s, r) => s + Number(r.amount), 0);
           return `<div class="card item"><div class="row"><span class="who">${niceDate(d)}</span><span class="amount">${money(total)}</span></div>` +
-            list.map(r => `<div class="meta">${esc(r.expense_category === 'LABOUR' ? labourName(r.labour) : (r.payee_name || r.expense_type))} · ${money(r.amount)} · ${esc(modeName(r.payment_mode))}</div>`).join('') +
+            list.map(r => `<div class="meta">${esc(r.payee_name || r.expense_type)} · ${money(r.amount)} · ${esc(modeName(r.payment_mode))}</div>`).join('') +
             `</div>`;
         }).join('') : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`;
       } catch (e) { body.innerHTML = errBox(friendly(e)); }
@@ -1494,14 +1279,14 @@
     function drawHistory() {
       const box = $('bottom');
       if (!box) return;
-      if (f.cat !== 'LABOUR' && f.cat !== 'MISCELLANEOUS') { box.innerHTML = ''; return; }
+      if (f.cat !== 'MISCELLANEOUS') { box.innerHTML = ''; return; }
       box.innerHTML = `<button type="button" class="btn line" id="hist-toggle">🕘 ${I18n.t('history')} ${historyOpen ? '▲' : '▼'}</button><div id="hist-body"></div>`;
       $('hist-toggle').onclick = () => { historyOpen = !historyOpen; drawHistory(); if (historyOpen) loadHistory(); };
       if (historyOpen) loadHistory();
     }
 
     function knownNames() {
-      return (f.cat === 'LABOUR' ? names.labour : f.cat === 'SUPPLIER' ? names.suppliers : []).map(x => x.name);
+      return (f.cat === 'SUPPLIER' ? names.suppliers : []).map(x => x.name);
     }
     function drawSuggest() {
       const list = knownNames(), typed = f.name.trim().toLowerCase();
@@ -1544,19 +1329,8 @@
       const fail = (id, text, scrollTo) => { setErr(id, text); $(scrollTo).scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; };
       if (!f.ownerId) return fail('e-owner', L('कृपया मालिक चुनिए.', 'Please choose an owner.'), 's-owner');
       if (!f.cat) return fail('e-cat', L('कृपया बताइए किस चीज़ का खर्च है.', 'Please choose what this expense is for.'), 's-cat');
-      if (f.cat === 'LABOUR') {
-        if (!lab.on.size) return fail('e-lab', L('कृपया कम से कम एक मज़दूर चुनिए.', 'Please choose at least one labour.'), 's-who');
-        const bad = [...lab.on].filter(id => !(paise(lab.amt[id]) > 0));
-        $('llist').querySelectorAll('.lab-row').forEach(r => r.classList.toggle('bad-row', bad.includes(Number(r.dataset.id))));
-        if (bad.length) {
-          $('llist').querySelector('.bad-row').scrollIntoView({ behavior: 'smooth', block: 'center' });
-          setErr('e-lab', L('चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).', 'Enter an amount greater than zero for every selected labour.'));
-          return true;
-        }
-      } else {
-        if (!f.amount || !(amt > 0)) return fail('e-amt', L('कृपया राशि भरें.', 'Please enter an amount.'), 's-amt');
-        if (amt >= 1e10) return fail('e-amt', L('राशि बहुत बड़ी है। कृपया जाँच लें.', 'That amount is too large. Please check it.'), 's-amt');
-      }
+      if (!f.amount || !(amt > 0)) return fail('e-amt', L('कृपया राशि भरें.', 'Please enter an amount.'), 's-amt');
+      if (amt >= 1e10) return fail('e-amt', L('राशि बहुत बड़ी है। कृपया जाँच लें.', 'That amount is too large. Please check it.'), 's-amt');
       if (f.cat === 'CONTRACTOR' && !f.contractId) return fail('e-who', L('कृपया ठेकेदार चुनिए.', 'Please choose a contractor.'), 's-who');
       if (f.cat === 'SUPPLIER' && !f.supplierId) return fail('e-who', L('कृपया सप्लायर चुनिए.', 'Please choose a supplier.'), 's-who');
       if (f.cat === 'SUPPLIER' && !f.what.trim()) return fail('e-who', L('कृपया बताइए क्या सामान लिया.', 'Please enter what was bought.'), 's-who');
@@ -1571,23 +1345,6 @@
       if (firstError()) return;
       saving = true; $('save').disabled = true; $('save').firstChild.textContent = `⏳ ${L('सेव हो रहा है...', 'Saving...')} `;
       try {
-        if (f.cat === 'LABOUR') {
-          const picked = labRows().filter(r => lab.on.has(r.labour));
-          const res = await api('labour-payments/', { method: 'POST', body: {
-            project: state.project.id,
-            expense_date: $('date').value,
-            paid_by_owner: f.ownerId,
-            payment_mode: f.mode,
-            remarks: $('note').value.trim() || null,
-            // Only true when the user picked a labour from "Show Inactive".
-            include_inactive: picked.some(r => !r.is_active),
-            payments: picked.map(r => ({ labour: r.labour, amount: paiseText(paise(lab.amt[r.labour])) })),
-          } });
-          state.names = null;
-          sessionStorage.setItem('justSaved', JSON.stringify({ amount: res.total, who: picked.slice(0, 3).map(r => r.name).join(', ') + (picked.length > 3 ? ` +${picked.length - 3}` : '') }));
-          location.hash = '#/done';
-          return;
-        }
         const cat = CAT[f.cat];
         const body = {
           project: state.project.id,
@@ -2776,72 +2533,129 @@
     };
   }
 
-  // Distribute to Labour: several labourers, one amount each, saved as ONE batch (all or nothing) by the server.
-  // The screen shows the balance and stops an over-spend early; the server still makes the final decision.
-  async function screenDistribute() {
-    chrome('fund', '#/fund');
+  // Pay Labour: the one implementation of "pay a labourer" for every role, several labourers and one
+  // amount each, saved as ONE batch (all or nothing) by the server. Two audiences share it:
+  //   - fund-backed (canDistributeManagerFund: a Manager, or a Super Admin acting for one): paid out
+  //     of that manager's ManagerFund -- balance-checked, owner & payment mode always the fund's own.
+  //   - direct (anyone else who can add a Labour expense, e.g. an Owner with no fund of their own):
+  //     a plain expense straight from project cash -- no balance check, owner & payment mode picked
+  //     explicitly, exactly like any other Add Expense category.
+  // Same labour list, same search/show-inactive/Add-Labour, same save-and-done ending either way.
+  async function screenPayLabour() {
+    chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
+    const fundBacked = can('canDistributeManagerFund');
     let people;
     try { people = await api(`projects/${state.project.id}/people/`); }
     catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
-    const own = state.me.manager_id;                          // a manager distributes only their own fund
-    const managers = own ? people.managers.filter(m => m.id === own) : people.managers;
-    const back = `<a class="btn line" href="#/fund">← ${L('फंड देखें', 'Back to Manager Fund')}</a>`;
-    const title = `<h1>📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</h1>
-      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>`;
-    if (!managers.length) { $view.innerHTML = `${title}<div class="msg info">${L('कोई मैनेजर नहीं मिला.', 'No manager found for this project.')}</div>${back}`; return; }
-    let manager = managers.find(m => m.id === fundManager) || managers[0];
+
+    const title = fundBacked
+      ? `<h1>📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</h1>`
+      : `<h1>👷 ${L('मज़दूरी का भुगतान', 'Pay Labour')}</h1>`;
+    const intro = `${title}<p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>`;
+    const back = fundBacked
+      ? `<a class="btn line" href="#/fund">← ${L('फंड देखें', 'Back to Manager Fund')}</a>`
+      : `<a class="btn line" href="#/add">← ${L('वापस', 'Back')}</a>`;
+
+    // Fund-backed: which manager (a manager only ever pays their own fund; a Super Admin picks one).
+    const own = state.me.manager_id;
+    const managers = fundBacked ? (own ? people.managers.filter(m => m.id === own) : people.managers) : [];
+    if (fundBacked && !managers.length) { $view.innerHTML = `${intro}<div class="msg info">${L('कोई मैनेजर नहीं मिला.', 'No manager found for this project.')}</div>${back}`; return; }
+    let manager = fundBacked ? (managers.find(m => m.id === fundManager) || managers[0]) : null;
+
+    // Direct: which owner it's attributed to (a manager has no Owner record of their own, same rule
+    // as the rest of Add Expense).
+    const ownerChoices = fundBacked ? [] : (state.me.owner_id ? [] : (people.owners || []));
+    if (!fundBacked && !state.me.owner_id && !ownerChoices.length) {
+      $view.innerHTML = `${intro}<div class="empty"><div class="ico">🔒</div><h2>${L('इस प्रोजेक्ट पर कोई मालिक नहीं जुड़ा है', 'No owner is assigned to this project')}</h2><p>${L('खर्च दर्ज नहीं किया जा सकता। कृपया एडमिन से संपर्क करें.', 'An expense cannot be attributed. Please contact the administrator.')}</p></div>`;
+      return;
+    }
+    let ownerId = state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '');
+    let mode = 'CASH';
+
     const picked = new Set(), amt = {};
     let q = '', showInactive = false, available = 0, saving = false;
+    const labourLists = {};   // active/inactive, lazy-loaded -- most visits never need "inactive"
+    async function loadLabour(kind) {
+      if (!labourLists[kind]) labourLists[kind] = await api(`project-labour/?project=${state.project.id}&status=${kind}`);
+      return labourLists[kind];
+    }
+    const labourRows = () => {
+      const rows = labourLists.active.slice();
+      (labourLists.inactive || []).forEach(r => { if (showInactive || picked.has(r.labour)) rows.push(r); });
+      return rows;
+    };
 
-    $view.innerHTML = `<div class="distribute-labour">${title}
+    $view.innerHTML = `<div class="pay-labour">${intro}
       ${state.projects.length > 1 ? `<select id="dproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
       <div id="dmsg"></div>
       <form id="df" novalidate>
-        ${managers.length > 1 ? `<label for="d-mgr">${L('मैनेजर', 'Manager')}</label><select id="d-mgr">${managers.map(m => `<option value="${m.id}" ${m.id === manager.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`
-          : `<p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(manager.name)}</b></p>`}
-        <div class="card tot-box"><div class="muted">${L('उपलब्ध फंड', 'Available Balance')}</div><div class="big-total" id="d-avail">…</div><div class="muted" id="d-note"></div></div>
+        ${fundBacked
+          ? (managers.length > 1
+              ? `<label for="d-mgr">${L('मैनेजर', 'Manager')}</label><select id="d-mgr">${managers.map(m => `<option value="${m.id}" ${m.id === manager.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`
+              : `<p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(manager.name)}</b></p>`)
+          : (ownerChoices.length > 1
+              ? `<label for="d-own">${L('किस मालिक की तरफ से?', 'On behalf of')}</label><select id="d-own"><option value="">${L('— मालिक चुनिए —', '— Choose an owner —')}</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>`
+              : '')}
+        ${fundBacked ? `<div class="card tot-box"><div class="muted">${L('उपलब्ध फंड', 'Available Balance')}</div><div class="big-total" id="d-avail">…</div><div class="muted" id="d-note"></div></div>` : ''}
         <label for="d-date">${L('तारीख', 'Date')} *</label><input id="d-date" type="date" value="${today()}">
+        ${fundBacked ? '' : `<div class="q">${L('कैसे दिया?', 'Paid by')}</div>
+          <div class="choices small">${MODES.map(m => `<button type="button" class="choice" data-mode="${m.key}" aria-pressed="${m.key === 'CASH'}">${modeLabel(m)}</button>`).join('')}</div>`}
         <div class="q">${L('किन मज़दूरों को दिया?', 'Labour &amp; amounts')} <small id="d-count"></small></div>
-        <input id="d-q" type="text" autocomplete="off" placeholder="🔍 ${L('मज़दूर खोजिए', 'Search Labour')}">
+        <div class="lab-bar">
+          <input id="d-q" type="text" autocomplete="off" placeholder="🔍 ${L('मज़दूर खोजिए', 'Search Labour')}">
+          ${can('canManageLabour') ? `<button type="button" class="btn line" id="d-add">➕ ${L('नया', 'Add Labour')}</button>` : ''}
+        </div>
         <label class="lab-inact"><input type="checkbox" id="d-inact"> ${L('पुराने / काम बंद मज़दूर भी दिखाएँ', 'Show Inactive')}</label>
-        <div id="dlist"></div>
-        <div class="card lab-total"><div class="row"><span>${L('इस बार का कुल', 'Total This Distribution')}</span><span class="amount" id="d-total">₹ 0</span></div>
-          <div class="row"><span>${L('उपलब्ध फंड', 'Available Balance')}</span><span class="amount" id="d-avail2">₹ 0</span></div>
-          <div class="row"><span>${L('बाँटने के बाद बचेगा', 'Balance After Distribution')}</span><span class="amount" id="d-after">₹ 0</span></div></div>
+        <div id="dnote"></div>
+        <div id="dlist"><div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div></div>
+        ${fundBacked
+          ? `<div class="card lab-total"><div class="row"><span>${L('इस बार का कुल', 'Total This Distribution')}</span><span class="amount" id="d-total">₹ 0</span></div>
+            <div class="row"><span>${L('उपलब्ध फंड', 'Available Balance')}</span><span class="amount" id="d-avail2">₹ 0</span></div>
+            <div class="row"><span>${L('बाँटने के बाद बचेगा', 'Balance After Distribution')}</span><span class="amount" id="d-after">₹ 0</span></div></div>`
+          : `<div class="card row lab-total"><span>${L('कुल मज़दूरी', 'Total Labour Payment')}</span><span class="amount" id="d-total">₹ 0</span></div>`}
         <div class="field-error" id="d-warn"></div>
         <label for="d-note-in">${L('जानकारी', 'Remarks (optional)')}</label><input id="d-note-in" type="text" autocomplete="off">
-        <button class="btn green" type="submit" id="d-save">💾 ${L('बाँट दें', 'SAVE DISTRIBUTION')}</button>
-        <a class="btn line" href="#/fund">${L('रद्द करें', 'Cancel')}</a>
+        <button class="btn green" type="submit" id="d-save">💾 ${fundBacked ? L('बाँट दें', 'SAVE DISTRIBUTION') : L('सेव करें', 'SAVE PAYMENT')}</button>
+        ${back}
       </form></div>`;
     const $ = id => document.getElementById(id);
     const sum = () => [...picked].reduce((t, id) => t + toPaise(amt[id]), 0);
     const problem = () => {
       if (!picked.size) return L('कम से कम एक मज़दूर चुनिए.', 'Please choose at least one labour.');
       if ([...picked].some(id => !(toPaise(amt[id]) > 0))) return L('चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).', 'Enter an amount greater than zero for every selected labour.');
-      if (sum() > available) return L('कुल राशि उपलब्ध फंड से ज़्यादा है — घटाइए.', 'Total is more than the available balance.');
+      if (fundBacked && sum() > available) return L('कुल राशि उपलब्ध फंड से ज़्यादा है — घटाइए.', 'Total is more than the available balance.');
+      if (!fundBacked && !ownerId) return L('कृपया मालिक चुनिए.', 'Please choose an owner.');
       return '';
     };
     function update() {
-      const total = sum(), after = available - total;
-      $('d-avail').textContent = money(available / 100); $('d-avail2').textContent = money(available / 100);
-      $('d-total').textContent = money(total / 100); $('d-after').textContent = money(after / 100);
-      $('d-after').classList.toggle('out', after < 0);
+      const total = sum();
+      $('d-total').textContent = money(total / 100);
+      if (fundBacked) {
+        const after = available - total;
+        $('d-avail').textContent = money(available / 100); $('d-avail2').textContent = money(available / 100);
+        $('d-after').textContent = money(after / 100);
+        $('d-after').classList.toggle('out', after < 0);
+      }
       $('d-count').textContent = picked.size ? `(${picked.size} ${L('चुने', 'selected')})` : '';
-      $('d-warn').textContent = total > available ? problem() : '';
+      $('d-warn').textContent = (fundBacked && total > available) ? problem() : '';
       $('d-save').disabled = saving || !!problem();
     }
     function drawRows() {
-      const rows = people.labour.filter(l => (l.is_active || showInactive || picked.has(l.id)) && (!q || l.name.toLowerCase().includes(q)));
-      $('dlist').innerHTML = rows.length ? rows.map(l => `
-        <div class="lab-row ${picked.has(l.id) ? 'on' : ''}" data-id="${l.id}">
-          <label class="lab-pick"><input type="checkbox" class="lab-chk" ${picked.has(l.id) ? 'checked' : ''}>
-            <span class="lab-name">${esc(l.name)}${l.type ? ` <small>${esc(l.type)}</small>` : ''} ${l.is_active ? '' : `<span class="pill warn">${L('काम बंद', 'Inactive')}</span>`}</span></label>
-          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="${esc(l.name)} ${L('राशि', 'amount')}" value="${esc(amt[l.id] || '')}"></span>
-        </div>`).join('') : `<div class="msg info">${L('इस प्रोजेक्ट में कोई मज़दूर नहीं मिला.', 'No labour found.')}</div>`;
+      const rows = labourRows().filter(r => (r.is_active || showInactive || picked.has(r.labour)) && (!q || (r.name + ' ' + (r.mobile || '')).toLowerCase().includes(q)));
+      $('dlist').innerHTML = rows.length ? rows.map(r => `
+        <div class="lab-row ${picked.has(r.labour) ? 'on' : ''}" data-id="${r.labour}">
+          <label class="lab-pick"><input type="checkbox" class="lab-chk" ${picked.has(r.labour) ? 'checked' : ''}>
+            <span class="lab-name">${esc(r.name)}${r.type ? ` <small>${esc(r.type)}</small>` : ''}
+              ${r.is_active ? '' : `<span class="pill warn">${L('काम बंद', 'Inactive')}</span>`}
+              ${r.last_paid ? `<span class="lab-last">Last paid: ${shortDate(r.last_paid)}</span>` : ''}</span></label>
+          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="${esc(r.name)} ${L('राशि', 'amount')}" value="${esc(amt[r.labour] || '')}"></span>
+          ${r.is_active && can('canManageLabour') ? `<button type="button" class="lab-stop">${L('काम बंद करें', 'Mark inactive')}</button>` : ''}
+        </div>`).join('') : `<div class="msg info">${L('इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है।', 'No active labour on this project yet.')}</div>`;
     }
     async function loadBalance() {
+      if (!fundBacked) return;
       try {
         const r = await api(`manager-funds/summary/?project=${state.project.id}&manager=${manager.id}`);
         const row = (r.summary || [])[0];
@@ -2849,6 +2663,95 @@
         $('d-note').textContent = row ? '' : L('इस मैनेजर को अभी कोई फंड नहीं मिला.', 'No fund given yet.');
       } catch (e) { available = 0; $('dmsg').innerHTML = errBox(fundErr(e)); }
       update();
+    }
+    function labourModal() {
+      const box = document.createElement('div');
+      box.className = 'modal';
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="${L('नया मज़दूर', 'Add Labour')}" novalidate>
+        <h2 style="margin-top:0">➕ ${L('नया मज़दूर', 'Add Labour')}</h2>
+        <div id="m-err"></div>
+        <div id="m-fields">
+          <label for="m-name">${L('नाम / मिस्त्री', 'Name')} *</label>
+          <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+          <label for="m-mob">${L('मोबाइल नंबर', 'Mobile')} *</label>
+          <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
+          <label for="m-type">${L('काम का प्रकार', 'Type (optional)')}</label>
+          <input id="m-type" type="text" autocomplete="off" placeholder="${L('जैसे: मिस्त्री, हेल्पर', 'e.g. Mason, Helper')}" enterkeyhint="next">
+          <label for="m-rem">${L('जानकारी', 'Remarks (optional)')}</label>
+          <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
+          <button class="btn green" type="submit" id="m-save">💾 ${L('सेव करें', 'SAVE')}</button>
+        </div>
+        <div id="m-dup" hidden></div>
+        <button class="btn line" type="button" id="m-cancel">${L('रद्द करें', 'Cancel')}</button>
+      </form>`;
+      document.body.appendChild(box);
+      const m = id => box.querySelector('#' + id);
+      const close = () => {
+        box.remove();
+        document.removeEventListener('keydown', onKey);
+        window.removeEventListener('hashchange', close);
+      };
+      const onKey = e => { if (e.key === 'Escape') close(); };
+      document.addEventListener('keydown', onKey);
+      window.addEventListener('hashchange', close);      // Back / navigation must not leave the overlay behind
+      m('m-cancel').onclick = close;
+      m('m-name').focus();
+
+      // The labour now exists on the server; show it in the list and select it.
+      function added(r) {
+        close();
+        if (!document.getElementById('dlist')) return;
+        picked.add(r.labour);
+        q = ''; if ($('d-q')) $('d-q').value = '';
+        if (labourLists.active) {
+          ['active', 'inactive'].forEach(k => { if (labourLists[k]) labourLists[k] = labourLists[k].filter(x => x.labour !== r.labour); });
+          labourLists.active.unshift(r);
+          drawRows(); update();
+        }
+        if (r.reused) $('dnote').innerHTML = `<div class="msg info">${L('यह मज़दूर पहले से था — इस प्रोजेक्ट में चालू कर दिया.', 'This labour already existed — marked active on this project.')}</div>`;
+        const row = document.querySelector(`#dlist .lab-row[data-id="${r.labour}"]`);
+        if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('.lab-a').focus(); }
+      }
+
+      // Same name, different mobile: ask "is this the same person?" (only when there is such a match).
+      function askSame(cands, send) {
+        m('m-fields').hidden = true;
+        const dup = m('m-dup');
+        dup.hidden = false;
+        dup.innerHTML = `<h2 style="margin-top:0">${L('क्या यह वही मज़दूर है?', 'Is this the same person?')}</h2>` +
+          cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
+            <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
+            <div class="muted">${c.last_paid ? 'Last paid: ' + shortDate(c.last_paid) : 'Never paid'}</div>
+            <button class="btn green" type="button" data-use="${c.labour}" style="margin-bottom:0">✔ ${L('यही है', 'Use this Labour')}</button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ ${L('अलग व्यक्ति है', 'Different Person')}</button>`;
+        dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_labour: Number(b.dataset.use) }));
+        m('m-new').onclick = () => send({ confirm_new: true });
+      }
+
+      box.querySelector('form').onsubmit = async ev => {
+        ev.preventDefault();
+        const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
+        if (!name) { m('m-err').innerHTML = errBox(L('कृपया नाम भरें.', 'Please enter a name.')); m('m-name').focus(); return; }
+        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox(L('कृपया सही मोबाइल नंबर भरें.', 'Please enter a valid mobile number.')); m('m-mob').focus(); return; }
+        const send = async extra => {
+          const btns = box.querySelectorAll('button');
+          btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
+          m('m-err').innerHTML = '';
+          let r;
+          try {
+            r = await api('project-labour/', { method: 'POST', body: {
+              project: state.project.id, name, mobile, type: m('m-type').value.trim(), remarks: m('m-rem').value.trim(), ...extra } });
+          } catch (e) {
+            btns.forEach(b => { b.disabled = false; });
+            if (e.status === 409 && e.data && e.data.code === 'possible_duplicate') { askSame(e.data.candidates || [], send); return; }
+            m('m-fields').hidden = false; m('m-dup').hidden = true;
+            m('m-err').innerHTML = errBox(serverMsg(e) || friendly(e));
+            return;
+          }
+          added(r);
+        };
+        send({});
+      };
     }
     $('dlist').onchange = e => {
       if (!e.target.classList.contains('lab-chk')) return;
@@ -2865,33 +2768,74 @@
       if (e.target.value) { picked.add(id); row.classList.add('on'); row.querySelector('.lab-chk').checked = true; }
       $('dmsg').innerHTML = ''; update();
     };
+    $('dlist').onclick = async e => {
+      const btn = e.target.closest('.lab-stop');
+      if (!btn) return;
+      const row = btn.closest('.lab-row'), id = Number(row.dataset.id);
+      const link = (labourLists.active || []).find(x => x.labour === id);
+      if (!link || !confirm(L(`${link.name} को इस प्रोजेक्ट में "काम बंद" करें?\nपुराना हिसाब बना रहेगा.`, `Mark ${link.name} inactive on this project?\nPast records will stay.`))) return;
+      try {
+        await api(`project-labour/${link.id}/set-active/`, { method: 'POST', body: { is_active: false } });
+        labourLists.active = labourLists.active.filter(x => x !== link);
+        if (labourLists.inactive) labourLists.inactive.push({ ...link, is_active: false });
+        picked.delete(id); delete amt[id];
+        drawRows(); update();
+      } catch (err) { $('dnote').innerHTML = errBox(serverMsg(err) || friendly(err)); }
+    };
     $('d-q').oninput = e => { q = e.target.value.trim().toLowerCase(); drawRows(); };
-    $('d-inact').onchange = e => { showInactive = e.target.checked; drawRows(); };
-    if ($('dproj')) $('dproj').onchange = () => { state.project = state.projects.find(p => p.id === Number($('dproj').value)); store.set('projectId', state.project.id); state.names = null; fundManager = null; screenDistribute(); };
+    $('d-inact').onchange = async e => {
+      showInactive = e.target.checked;
+      if (showInactive && !labourLists.inactive) {
+        try { await loadLabour('inactive'); } catch (err) { $('dnote').innerHTML = errBox(friendly(err)); }
+      }
+      drawRows(); update();
+    };
+    if ($('d-add')) $('d-add').onclick = () => labourModal();
+    if ($('dproj')) $('dproj').onchange = () => { state.project = state.projects.find(p => p.id === Number($('dproj').value)); store.set('projectId', state.project.id); state.names = null; fundManager = null; screenPayLabour(); };
     if ($('d-mgr')) $('d-mgr').onchange = e => { manager = managers.find(m => m.id === Number(e.target.value)); loadBalance(); };
+    if ($('d-own')) $('d-own').onchange = e => { ownerId = e.target.value; update(); };
+    document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
+      mode = b.dataset.mode;
+      document.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b));
+    });
     $('df').onsubmit = async ev => {
       ev.preventDefault();
       if (saving) return;
       const bad = t => { $('dmsg').innerHTML = errBox(t); window.scrollTo(0, 0); };
       if (problem()) return bad(problem());
       if (!$('d-date').value) return bad(L('कृपया तारीख चुनिए.', 'Please choose a date.'));
-      const lines = people.labour.filter(l => picked.has(l.id));
+      const lines = labourRows().filter(r => picked.has(r.labour));
       saving = true; update(); $('dmsg').innerHTML = '';
+      const who = lines.slice(0, 3).map(r => r.name).join(', ') + (lines.length > 3 ? ` +${lines.length - 3}` : '');
       try {
-        const r = await api('manager-labour-distributions/batch/', { method: 'POST', body: {
-          project: state.project.id, manager: manager.id, date: $('d-date').value, remarks: $('d-note-in').value.trim(),
-          include_inactive: lines.some(l => !l.is_active),
-          payments: lines.map(l => ({ labour: l.id, amount: fromPaise(toPaise(amt[l.id])) })) } });
-        fundFlash = L(`बँट गया: ${money(r.total)} — ${lines.length} मज़दूर, एक बैच में.`, `Distribution saved: ${money(r.total)} — ${lines.length} labour, one batch.`);
-        fundManager = manager.id;
-        location.hash = '#/fund';
+        if (fundBacked) {
+          const r = await api('manager-labour-distributions/batch/', { method: 'POST', body: {
+            project: state.project.id, manager: manager.id, date: $('d-date').value, remarks: $('d-note-in').value.trim(),
+            include_inactive: lines.some(l => !l.is_active),
+            payments: lines.map(l => ({ labour: l.labour, amount: fromPaise(toPaise(amt[l.labour])) })) } });
+          fundManager = manager.id;
+          sessionStorage.setItem('justSaved', JSON.stringify({ amount: r.total, who }));
+        } else {
+          const r = await api('labour-payments/', { method: 'POST', body: {
+            project: state.project.id, expense_date: $('d-date').value, paid_by_owner: ownerId, payment_mode: mode,
+            remarks: $('d-note-in').value.trim() || null,
+            include_inactive: lines.some(l => !l.is_active),
+            payments: lines.map(l => ({ labour: l.labour, amount: fromPaise(toPaise(amt[l.labour])) })) } });
+          state.names = null;
+          sessionStorage.setItem('justSaved', JSON.stringify({ amount: r.total, who }));
+        }
+        location.hash = '#/done';
       } catch (e) {
         saving = false;
         bad(fundErr(e));
-        await loadBalance();                         // the balance may have changed: show the truth
+        if (fundBacked) await loadBalance(); else update();
       }
     };
-    drawRows(); update(); loadBalance();
+    try {
+      await loadLabour('active');
+      drawRows(); update();
+    } catch (err) { $('dlist').innerHTML = errBox(friendly(err)); }
+    if (fundBacked) loadBalance();
   }
 
   // ---------- router ----------
@@ -2925,7 +2869,7 @@
       case 'fund': return screenFund();
       case 'givefund': return screenGiveFund();
       case 'managers': return arg ? screenManagerDetail(Number(arg)) : screenManagers();
-      case 'distribute': return screenDistribute();
+      case 'distribute': return screenPayLabour();
       case 'resetpw': return screenResetPassword(arg);
       default: return screenHome();
     }
