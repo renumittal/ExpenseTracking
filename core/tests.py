@@ -102,7 +102,7 @@ class RoleBasedAccessTests(APITestCase):
 
     def test_manager_sees_no_expenses_without_view_permission(self):
         # RBAC v2: the endpoint itself is reachable by MANAGER now (they may still need it for
-        # canAddExpense/canEditExpense on a project), but canViewExpenses defaults to OFF for
+        # canAddSupplierExpense/canEditExpense on a project), but canViewExpenses defaults to OFF for
         # MANAGER (see access_catalog.py / web/authz.js), so the list is empty rather than a
         # blanket 403 -- a per-project override could grant it without any code change.
         self.auth_as(self.manager_user)

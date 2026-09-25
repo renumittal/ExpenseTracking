@@ -1,5 +1,5 @@
 /* UI authorization. The single place that knows about roles.
-   The rest of the app only asks:  can('canAddExpense')  /  Authz.navFor(can).
+   The rest of the app only asks:  can('canAddSupplierExpense')  /  Authz.navFor(can).
 
    This only shows or hides things. The API enforces the same permission names on the server
    (core/permissions.py), so hiding a button here is never the security.
@@ -40,11 +40,13 @@
     { key: 'canViewContractors',   group: 'view', label: 'View Contractors', roles: OWN },
     { key: 'canViewManagerFund',   group: 'view', label: 'View Manager Fund', roles: OPS },
 
-    { key: 'canAddExpense',          group: 'ops', label: 'Add Expense',            roles: OPS },
+    { key: 'canAddSupplierExpense',  group: 'ops', label: 'Add Supplier Payment',   roles: OPS },
+    { key: 'canAddContractorExpense', group: 'ops', label: 'Add Contractor Payment', roles: OPS },
+    { key: 'canAddMiscExpense',      group: 'ops', label: 'Add Misc Expense',       roles: OPS },
     { key: 'canEditExpense',         group: 'ops', label: 'Edit Expense',           roles: OPS },
     { key: 'canDeleteExpense',       group: 'ops', label: 'Delete Expense',         roles: OWN },
     { key: 'canManageLabour',        group: 'ops', label: 'Manage Labour',          roles: OPS },
-    { key: 'canRecordLabourPayment', group: 'ops', label: 'Labour Payment',         roles: OPS },
+    { key: 'canRecordLabourPayment', group: 'ops', label: 'Add Labour Payment',     roles: OPS },
     { key: 'canManageSuppliers',     group: 'ops', label: 'Manage Suppliers',       roles: OWN },
     { key: 'canManageContractors',   group: 'ops', label: 'Manage Contractors',     roles: OWN },
     { key: 'canGiveManagerFund',     group: 'ops', label: 'Give Manager Fund',      roles: OWN },
@@ -114,7 +116,11 @@
   const canViewCategory = (can, key) => can(reportPermission(key));
   // The Add screen (expense / labour-payment entry) is available only if some category can be entered.
   function canEnterAny(can) { return CATEGORIES.some(k => canAddCategory(can, k)); }
-  const canAddCategory = (can, key) => canViewCategory(can, key) && can(key === 'LABOUR' ? 'canRecordLabourPayment' : 'canAddExpense');
+  const ADD_PERMISSION = {
+    LABOUR: 'canRecordLabourPayment', SUPPLIER: 'canAddSupplierExpense',
+    CONTRACTOR: 'canAddContractorExpense', MISCELLANEOUS: 'canAddMiscExpense',
+  };
+  const canAddCategory = (can, key) => canViewCategory(can, key) && can(ADD_PERMISSION[key]);
   // Menu. `primary` items sit in the bottom bar; the rest go under "Menu".
   const NAV = [
     { id: 'home',        hash: '#/home',          icon: '🏠', hi: 'होम',       en: 'Dashboard',   perm: null, primary: true },

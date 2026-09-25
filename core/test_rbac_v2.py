@@ -269,9 +269,9 @@ class ExpenseEndpointProjectAwareTests(APITestCase):
         grant(self.manoj, self.manager_role, self.site_a)
         b_grant = grant(self.manoj, self.owner_role, self.site_b)
         override(b_grant, 'canEditExpense', OverrideEffect.DENY)
-        allow_role(self.manager_role, 'canEditExpense', 'canViewExpenses', 'canAddExpense',
+        allow_role(self.manager_role, 'canEditExpense', 'canViewExpenses', 'canAddMiscExpense',
                    'canRecordLabourPayment', 'canDeleteExpense')
-        allow_role(self.owner_role, 'canEditExpense', 'canViewExpenses', 'canAddExpense',
+        allow_role(self.owner_role, 'canEditExpense', 'canViewExpenses', 'canAddMiscExpense',
                    'canRecordLabourPayment', 'canDeleteExpense')
 
         # LabourPaymentBatchSerializer requires `paid_by_owner` to be the acting user's own Owner

@@ -39,7 +39,9 @@ from . import bills, ledger
 from .access import services
 from .permissions import (
     AdminOnly,
-    CAN_ADD_EXPENSE,
+    CAN_ADD_CONTRACTOR_EXPENSE,
+    CAN_ADD_MISC_EXPENSE,
+    CAN_ADD_SUPPLIER_EXPENSE,
     CAN_DELETE_EXPENSE,
     CAN_EDIT_EXPENSE,
     CAN_RECORD_LABOUR_PAYMENT,
@@ -402,11 +404,22 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(supplier_id=params['supplier'])
         return qs
 
+    # Which "Add Expense" permission gates creating each category, so each resource (labour,
+    # supplier, contractor, misc) can be turned on/off independently on the Role & Permissions screen.
+    ADD_PERMISSION_BY_CATEGORY = {
+        ExpenseCategory.LABOUR: CAN_RECORD_LABOUR_PAYMENT,
+        ExpenseCategory.SUPPLIER: CAN_ADD_SUPPLIER_EXPENSE,
+        ExpenseCategory.CONTRACTOR: CAN_ADD_CONTRACTOR_EXPENSE,
+        ExpenseCategory.MISCELLANEOUS: CAN_ADD_MISC_EXPENSE,
+    }
+
     def perform_create(self, serializer):
         user = self.request.user
         project = serializer.validated_data['project']
-        if not services.has_perm(user, CAN_ADD_EXPENSE, project):
-            raise PermissionDenied('You are not authorized to add expenses on this project.')
+        category = serializer.validated_data['expense_category']
+        permission = self.ADD_PERMISSION_BY_CATEGORY[category]
+        if not services.has_perm(user, permission, project):
+            raise PermissionDenied('You are not authorized to add this type of expense on this project.')
         serializer.save(created_by=user)
 
     @action(detail=True, methods=['post'])

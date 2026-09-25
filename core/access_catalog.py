@@ -41,8 +41,12 @@ PERMISSIONS = {
     'canViewBill': ('BILL', 'VIEW', 'view', 'View Bill',
                      'Can open an uploaded supplier bill.'),
 
-    'canAddExpense': ('EXPENSE', 'CREATE', 'ops', 'Add Expense',
-                       'Can record a new expense.'),
+    'canAddSupplierExpense': ('EXPENSE', 'CREATE', 'ops', 'Add Supplier Payment',
+                               'Can record a new payment to a supplier.'),
+    'canAddContractorExpense': ('EXPENSE', 'CREATE', 'ops', 'Add Contractor Payment',
+                                 'Can record a new payment to a contractor.'),
+    'canAddMiscExpense': ('EXPENSE', 'CREATE', 'ops', 'Add Misc Expense',
+                           'Can record a new miscellaneous expense.'),
     'canEditExpense': ('EXPENSE', 'EDIT', 'ops', 'Edit Expense',
                         'Can change amount/date of an expense after saving.'),
     'canDeleteExpense': ('EXPENSE', 'DELETE', 'ops', 'Delete Expense',
@@ -107,7 +111,8 @@ def build_dependencies():
     code -> set of codes it requires, derived from the rules:
       - CREATE/EDIT/DELETE/APPROVE/MANAGE/PAY/GIVE/DISTRIBUTE/UPLOAD/RESET_PASSWORD on X => VIEW X.
       - Every non-PROJECT permission => PROJECT.VIEW (`canViewProjects`).
-      - Cross-deps: EXPENSE.CREATE/EDIT => SUPPLIER.VIEW, CONTRACTOR.VIEW.
+      - Cross-deps: canAddSupplierExpense => SUPPLIER.VIEW; canAddContractorExpense => CONTRACTOR.VIEW;
+        canEditExpense => SUPPLIER.VIEW, CONTRACTOR.VIEW (editing any category's expense may show either).
     `canChangeOwnPassword` (ANY_USER_CODES) and the baseline itself are excluded.
     """
     action_needs_view = {
@@ -128,7 +133,8 @@ def build_dependencies():
         deps[code] = needs
 
     # Cross-resource rules.
-    deps.setdefault('canAddExpense', set()).update({'canViewSuppliers', 'canViewContractors'})
+    deps.setdefault('canAddSupplierExpense', set()).update({'canViewSuppliers'})
+    deps.setdefault('canAddContractorExpense', set()).update({'canViewContractors'})
     deps.setdefault('canEditExpense', set()).update({'canViewSuppliers', 'canViewContractors'})
     return deps
 
@@ -171,7 +177,9 @@ RESET_DEFAULTS = {
     'canViewReports': {'OWNER': True, 'MANAGER': True, 'VIEWER': True},
     'canViewSuppliers': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
     'canViewContractors': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
-    'canAddExpense': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
+    'canAddSupplierExpense': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
+    'canAddContractorExpense': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
+    'canAddMiscExpense': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
     'canManageLabour': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
     'canRecordLabourPayment': {'OWNER': True, 'MANAGER': True, 'VIEWER': False},
     'canManageSuppliers': {'OWNER': True, 'MANAGER': False, 'VIEWER': False},
