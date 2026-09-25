@@ -448,7 +448,18 @@
     chrome('project', '#/home');
     loading();
     try {
-      const totals = await Promise.all(state.projects.map(p => api(`projects/${p.id}/summary/`).catch(() => null)));
+      // A manager's own card must show the same scoped figure as the admin Fund screen
+      // (what they distributed to labour), not the whole project's merged expense total --
+      // otherwise the two screens disagree and look like a data bug.
+      const isManager = !!state.me.manager_id && can('canViewManagerFund');
+      const [totals, fundByProject] = await Promise.all([
+        isManager ? Promise.resolve(null) : Promise.all(state.projects.map(p => api(`projects/${p.id}/summary/`).catch(() => null))),
+        isManager ? api('manager-funds/statement/').then(r => {
+          const m = {};
+          (r.statements || []).forEach(x => { m[x.position.project_id] = x.position; });
+          return m;
+        }).catch(() => ({})) : Promise.resolve(null),
+      ]);
       if (!state.projects.length) { $view.innerHTML = noProject(); return; }
       const many = state.projects.length > 1;
       const shownFlash = projectFlash; projectFlash = '';
@@ -456,15 +467,21 @@
         (shownFlash ? `<div class="msg ok" role="status">${esc(shownFlash)}</div>` : '') +
         (can('canCreateProject') ? `<a class="btn green" href="#/settings/new">➕ ${L('नया प्रोजेक्ट', 'New Project')}</a>` : '') +
         (many ? `<p class="muted">${L('जिस प्रोजेक्ट में काम करना है उसे छूइए.', 'Tap the project you want to work on.')}</p>` : '') +
-        (state.projects.map((p, i) => `
+        (state.projects.map((p, i) => {
+          const pos = fundByProject && fundByProject[p.id];
+          const totalLine = pos
+            ? `<div style="margin-top:8px">${L('मज़दूरों को बाँटा', 'Distributed to Labour')} <span class="amount">${money(pos.total_distributed)}</span></div>`
+            : (totals && totals[i] ? `<div style="margin-top:8px">${L('कुल खर्च', 'Total Expense')} <span class="amount">${money(totals[i].total_expense)}</span></div>` : '');
+          return `
           <${many ? 'button type="button"' : 'div'} class="card pick ${p.id === state.project.id ? 'on' : ''}" data-id="${p.id}">
             <div class="row"><b style="font-size:1.3rem">${esc(p.name)}</b>${many && p.id === state.project.id ? `<span class="pill">✔ ${L('चुना है', 'Selected')}</span>` : ''}</div>
             <div><span class="pill">${esc(Authz.ROLE_LABEL[Authz.roleIn(state.user, p.id)] || '')}</span></div>
             ${p.location ? `<div class="muted">📍 ${esc(p.location)}</div>` : ''}
             ${p.plot_size ? `<div class="muted">${L('प्लॉट', 'Plot')}: ${esc(p.plot_size)}</div>` : ''}
             <div class="muted">${esc(statusLabel(p.status))}${p.start_date ? ` · ${L('शुरू', 'Started')}: ` + niceDate(p.start_date) : ''}</div>
-            ${totals[i] ? `<div style="margin-top:8px">${L('कुल खर्च', 'Total Expense')} <span class="amount">${money(totals[i].total_expense)}</span></div>` : ''}
-          </${many ? 'button' : 'div'}>`).join('') || noProject());
+            ${totalLine}
+          </${many ? 'button' : 'div'}>`;
+        }).join('') || noProject());
       $view.querySelectorAll('button.pick').forEach(b => b.onclick = () => {
         state.project = state.projects.find(p => p.id === Number(b.dataset.id));
         store.set('projectId', state.project.id);
@@ -1354,12 +1371,17 @@
     // Everything on this screen is limited to the categories you may view.
     const total = all ? Number(d.total_expense) : cats.reduce((sum, c) => sum + Number(d.category_breakup[c.key] || 0), 0);
     const pct = v => (total > 0 ? Math.round((Number(v) / total) * 100) : 0);
+    // This total is the whole project (every category, every manager/owner). A manager's own
+    // fund-distribution figure (as shown on the Manager Fund screen) is a smaller subset of it,
+    // not a separate number -- call that out explicitly so the two screens don't look like they disagree.
+    const myFund = state.me.manager_id && (d.manager_fund_summary || []).find(f => f.manager_id === state.me.manager_id);
 
     $view.innerHTML = `
       <h1>📊 ${L('कुल खर्च', 'Total Expense')}</h1>
       <p class="muted">${L('जोड़ और हिसाब -- किस पर कितना खर्च हुआ', 'Totals and breakdown -- how much went where')}</p>
       <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
-      <div class="card"><div class="muted">${L('कुल खर्च', 'Total Expense')}</div><div class="big-total">${money(total)}</div></div>
+      <div class="card"><div class="muted">${L('पूरे प्रोजेक्ट का कुल खर्च (सभी श्रेणी, सभी लोग)', 'Whole project total (all categories, everyone)')}</div><div class="big-total">${money(total)}</div></div>
+      ${myFund ? `<div class="card"><div class="muted">${L('आपने मज़दूरों को बाँटा (Manager Fund से)', 'You distributed to labour (from your Manager Fund)')}</div><div class="big-total">${money(myFund.distributed_amount)}</div><div class="muted">${L('यह ऊपर के कुल खर्च का एक हिस्सा है, अलग नहीं', 'This is a part of the total above, not a separate figure')}</div></div>` : ''}
       <h2>${L('किस पर कितना खर्च हुआ', 'Spend by category')}</h2>
       ${cats.map(c => { const link = can(Authz.reportPermission(c.key)); return `
         <${link ? `a href="#/report/${c.key}"` : 'div'} class="card">
