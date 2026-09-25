@@ -343,6 +343,25 @@ class ExpenseEndpointProjectAwareTests(APITestCase):
         # Owner on Site B still has canRecordLabourPayment (only canEditExpense was denied there).
         self.assertEqual(pay(self.site_b).status_code, 201)
 
+    def test_manager_with_no_owner_record_can_pay_as_a_real_owner(self):
+        # A plain manager (no Owner profile of their own, unlike self.manoj in this test class) has
+        # nothing to self-attribute to -- they record on behalf of one of the project's real owners,
+        # which the self-attribution check must not block just because it isn't "their own" Owner.
+        from .models import Labour, ProjectLabour
+        plain_manager = User.objects.create_user(username='plain_manager', password='x')
+        grant(plain_manager, self.manager_role, self.site_a)
+        token, _ = Token.objects.get_or_create(user=plain_manager)
+        client = self.client_class()
+        client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+
+        labour = Labour.objects.create(name='Suresh')
+        ProjectLabour.objects.create(project=self.site_a, labour=labour, is_active=True)
+        r = client.post('/api/labour-payments/', {
+            'project': self.site_a.id, 'expense_date': '2026-01-03', 'paid_by_owner': self.biller.id,
+            'payment_mode': 'CASH', 'payments': [{'labour': labour.id, 'amount': '300.00'}],
+        }, format='json')
+        self.assertEqual(r.status_code, 201, r.data)
+
     def test_labour_payment_denied_on_unassigned_project(self):
         from .models import Labour, ProjectLabour
         stranger_project = Project.objects.create(name='Stranger2', code='MJ-D')

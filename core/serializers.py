@@ -243,7 +243,13 @@ class LabourPaymentBatchSerializer(serializers.Serializer):
 
     def validate(self, attrs):
         request = self.context.get('request')
-        if request is not None and not is_admin(request.user) and attrs['paid_by_owner'].user_id != request.user.id:
+        # Self-attribution only binds someone who *is* an owner (protects an owner from recording a
+        # payment "as" another owner). A manager has no Owner record of their own -- they're
+        # recording on behalf of one of the project's real owners, picked in the UI, which is fine:
+        # services.has_perm(..., project) already confirmed they may add labour payments here at all.
+        actor_owner = getattr(request.user, 'owner_profile', None) if request is not None else None
+        if request is not None and not is_admin(request.user) and actor_owner is not None \
+                and attrs['paid_by_owner'].id != actor_owner.id:
             raise serializers.ValidationError({'paid_by_owner': 'You can only record payments as yourself.'})
 
         labours = [line['labour'] for line in attrs['payments']]

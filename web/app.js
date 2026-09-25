@@ -202,6 +202,7 @@
           ${can('canChangeOwnPassword') ? `<a class="user-menu-item" role="menuitem" href="#/profile">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}
           ${can('canManagePermissions') ? `<a class="user-menu-item" role="menuitem" href="#/settings">⚙️ ${esc(I18n.t('settings'))}</a>` : ''}
           <button type="button" class="user-menu-item" role="menuitem" id="logoutBtn">🚪 ${esc(I18n.t('logout'))}</button>
+          <button type="button" class="user-menu-item" role="menuitem" id="hardRefreshBtn">🔄 ${I18n.getLang() === 'hi' ? 'पूरा रीफ्रेश करें' : 'Hard refresh'}</button>
           <div class="user-menu-divider"></div>
           <div class="user-menu-version">Expense Tracker ${APP_VERSION}</div>
         </div>
@@ -224,6 +225,7 @@
       route();   // re-render the current screen (and chrome) in the new language
     });
     document.getElementById('logoutBtn').onclick = doLogout;
+    document.getElementById('hardRefreshBtn').onclick = hardRefresh;
 
     const sel = document.getElementById('demoSel');
     if (sel) sel.onchange = () => {
@@ -235,12 +237,15 @@
   }
 
   // Names for turning ids into words (labour / suppliers / contractors of this project).
+  // A manager has no Owner record of their own -- every expense still needs a real owner attached
+  // (`paid_by_owner`), so a manager also needs the project's actual owners to choose from.
   async function loadNames(force) {
     if (state.names && !force && state.names.projectId === state.project.id) return state.names;
-    const [labour, suppliers, contracts] = await Promise.all([
+    const [labour, suppliers, contracts, people] = await Promise.all([
       api('labour/'), api('suppliers/'), api(`contractor-contracts/?project=${state.project.id}`),
+      state.me.owner_id ? null : api(`projects/${state.project.id}/people/`),
     ]);
-    state.names = { projectId: state.project.id, labour, suppliers, contracts };
+    state.names = { projectId: state.project.id, labour, suppliers, contracts, owners: people ? people.owners : null };
     return state.names;
   }
 
@@ -350,6 +355,22 @@
     location.hash = '#/login';
   }
 
+  // Stays logged in (unlike doLogout): drops the installed service worker and its cached app
+  // shell so the next load is guaranteed fresh, for when a stale PWA install won't update itself.
+  async function hardRefresh() {
+    try {
+      if ('serviceWorker' in navigator) {
+        const regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(r => r.unregister()));
+      }
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.map(k => caches.delete(k)));
+      }
+    } catch (e) { console.error('hard refresh', e); }
+    location.reload();
+  }
+
   function screenHome() {
     chrome('home');
     const proj = state.project;
@@ -405,13 +426,27 @@
     let names;
     try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
 
-    const f = { cat: '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '' };
+    // A manager has no Owner record of their own; every expense still needs one attached
+    // (`paid_by_owner`), so a manager picks which of the project's real owners it's on behalf of.
+    // With exactly one (the usual case) it's picked silently; with none, there's nobody to attribute
+    // to and the form can't be used at all.
+    const ownerChoices = state.me.owner_id ? [] : (names.owners || []);
+    if (!state.me.owner_id && !ownerChoices.length) {
+      $view.innerHTML = '<div class="empty"><div class="ico">🔒</div><h2>इस प्रोजेक्ट पर कोई मालिक नहीं जुड़ा है</h2><p>No owner is assigned to this project, so an expense cannot be attributed. Please contact the administrator.</p></div>';
+      return;
+    }
+
+    const f = { cat: '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '',
+      ownerId: state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '') };
     let saving = false;
     $view.innerHTML = `
       <h1>➕ खर्च डालें <small>Add Expense</small></h1>
       <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
       ${state.projects.length > 1 && can('canViewProjects') ? '<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 प्रोजेक्ट बदलें <span class="sub">Change Project</span></a>' : ''}
       <div id="top"></div>
+      ${ownerChoices.length > 1 ? `<div class="step" id="s-owner"><label for="owner">किस मालिक की तरफ से? <small>On behalf of</small></label>
+        <select id="owner"><option value="">— मालिक चुनिए —</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
+        <div class="field-error" id="e-owner"></div></div>` : ''}
       <div class="step" id="s-cat"><div class="q"><span class="num">1</span>किस चीज़ का खर्च है?</div>
         <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${c.hi}<br><small>${c.en}</small></button>`).join('')}</div>
         <div class="field-error" id="e-cat"></div></div>
@@ -946,6 +981,7 @@
       document.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b));
     });
     document.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { $('date').value = b.dataset.d === '0' ? today() : yesterday(); setErr('e-date', ''); });
+    if ($('owner')) $('owner').onchange = e => { f.ownerId = e.target.value; setErr('e-owner', ''); };
     $('amt').oninput = e => {
       e.target.value = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1');
       f.amount = e.target.value;
@@ -957,6 +993,7 @@
     function firstError() {
       const amt = Number(f.amount);
       const fail = (id, text, scrollTo) => { setErr(id, text); $(scrollTo).scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; };
+      if (!f.ownerId) return fail('e-owner', 'कृपया मालिक चुनिए.', 's-owner');
       if (!f.cat) return fail('e-cat', 'कृपया बताइए किस चीज़ का खर्च है.', 's-cat');
       if (f.cat === 'LABOUR') {
         if (!lab.on.size) return fail('e-lab', 'कृपया कम से कम एक मज़दूर चुनिए.', 's-who');
@@ -990,7 +1027,7 @@
           const res = await api('labour-payments/', { method: 'POST', body: {
             project: state.project.id,
             expense_date: $('date').value,
-            paid_by_owner: state.me.owner_id,
+            paid_by_owner: f.ownerId,
             payment_mode: f.mode,
             remarks: $('note').value.trim() || null,
             // Only true when the user picked a labour from "Show Inactive".
@@ -1009,7 +1046,7 @@
           expense_category: f.cat,
           expense_type: f.cat === 'MISCELLANEOUS' ? (f.what.trim() || cat.type) : cat.type,
           party_type: cat.party,
-          paid_by_owner: state.me.owner_id,
+          paid_by_owner: f.ownerId,
           amount: Number(f.amount).toFixed(2),
           payment_mode: f.mode,
           remarks: $('note').value.trim() || null,

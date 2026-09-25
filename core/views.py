@@ -892,12 +892,11 @@ class LabourPaymentViewSet(viewsets.GenericViewSet):
     """POST one entry with many labourers; creates one LABOUR ExpenseTransaction per labour."""
 
     serializer_class = LabourPaymentBatchSerializer
-    permission_classes = [RoleAllowed]
-    # OWNER only: the serializer requires `paid_by_owner` to be the acting user's own Owner record
-    # (self-attribution, see LabourPaymentBatchSerializer.validate), which a MANAGER can never satisfy
-    # -- a manager's equivalent flow is ManagerLabourDistributionViewSet ("distribute from my fund"),
-    # gated by canDistributeManagerFund (see can_distribute_manager_fund, now also project-aware).
-    allowed_roles = {Role.OWNER}
+    # Real authorization is the project-aware canRecordLabourPayment check in create() (same pattern
+    # as ExpenseTransactionViewSet) -- no coarse role gate here, so a MANAGER granted that permission
+    # can use this too, attributing the payment to one of the project's real owners (self-attribution
+    # in the serializer only binds an actual owner; see LabourPaymentBatchSerializer.validate).
+    permission_classes = [IsAuthenticated]
 
     def create(self, request):
         ser = self.get_serializer(data=request.data)
