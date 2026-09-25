@@ -22,6 +22,7 @@ urlpatterns = [
     path('auth/change-password/', people.ChangePasswordView.as_view(), name='change-password'),
     path('me/', views.MeView.as_view(), name='me'),
     path('manager-summary/', views.ManagerSummaryView.as_view(), name='manager-summary'),
+    path('admin-summary/', views.AdminSummaryView.as_view(), name='admin-summary'),
     path('users/', people.UserListView.as_view(), name='users'),
     path('users/<int:user_id>/reset-password/', people.ResetPasswordView.as_view(), name='reset-password'),
     path('permission-matrix/', people.PermissionMatrixView.as_view(), name='permission-matrix'),

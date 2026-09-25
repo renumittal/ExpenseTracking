@@ -77,6 +77,8 @@ PERMISSIONS = {
 
     'canCreateProject': ('PROJECT', 'CREATE', 'app', 'Create Project',
                           'Can create a brand-new project.'),
+    'canViewAllProjects': ('PROJECT', 'VIEW_ALL', 'app', 'View All Projects',
+                            "Can see the Super Admin Dashboard: every project, its spend and attention items."),
     'canManageUsers': ('USER', 'MANAGE', 'app', 'Manage Users',
                         'Can create global user accounts.'),
     'canManageApplicationSettings': ('APP_SETTINGS', 'MANAGE', 'app', 'Application Settings',
@@ -95,6 +97,7 @@ ANY_USER_CODES = {'canChangeOwnPassword'}
 # Codes locked ON for SUPER_ADMIN and not editable for any role via the UI (mirrors `fixed` in authz.js).
 SUPER_ADMIN_ONLY_CODES = {
     'canCreateProject', 'canManageUsers', 'canManageApplicationSettings', 'canManagePermissions',
+    'canViewAllProjects',
 }
 
 # Always required, for every role, on every scope: the baseline "can this role open the project at all".

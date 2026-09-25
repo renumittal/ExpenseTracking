@@ -86,7 +86,7 @@
   const DEMO = !!(window.APP_CONFIG && window.APP_CONFIG.demoRoles);
   // The one permission check used everywhere: can('canAddSupplierExpense'). Role names live only in authz.js.
   // The server decides these (it returns them in /me/); the local matrix can only hide more, never grant more.
-  const SERVER_PERMS = ['canViewManagerFund', 'canGiveManagerFund', 'canDistributeManagerFund', 'canUploadBill', 'canViewBill'];
+  const SERVER_PERMS = ['canViewManagerFund', 'canGiveManagerFund', 'canDistributeManagerFund', 'canUploadBill', 'canViewBill', 'canViewProjectFunds'];
   const serverAllows = perm => {
     const me = state.me;
     if (!me || !me.permissions) return true;                                  // an older server: nothing to check
@@ -288,6 +288,7 @@
     contractors: () => L('ठेकेदार', 'Contractors'),
     project: () => L('प्रोजेक्ट', 'Projects'),
     fund: () => L('मैनेजर फंड', 'Manager Fund'),
+    managers: () => L('मैनेजर', 'Managers'),
     profile: () => L('पासवर्ड बदलें', 'Change Password'),
     users: () => L('यूज़र', 'Users'),
     settings: () => L('सेटिंग्स', 'Settings'),
@@ -295,7 +296,7 @@
   // hash (as passed for `back`) -> the tab id that owns that hash, so the breadcrumb can show a
   // middle segment (e.g. Home > Total Expense > Labour) when `back` points at a different screen
   // than a bare Home.
-  const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users' };
+  const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users', '#/managers': 'managers' };
 
   // ---------- chrome (back button, breadcrumb, tabs) ----------
   function chrome(tab, back) {
@@ -465,6 +466,13 @@
     if (mdRange === 'custom') { const m = mdMonthRange(); return { from: mdFrom || m.from, to: mdTo || m.to }; }
     return mdMonthRange();
   }
+  // One transactions-widget row (Manager Dashboard, Owner Dashboard, Manager detail). A manager
+  // expense row (Owner Dashboard/Manager detail scope) carries `by_manager` -- shown in the meta line.
+  const txnRowHtml = row => `
+          <div class="card item"><div class="row">
+            <span class="who">${row.type === 'IN' ? '📥' : '📤'} ${esc(row.description || row.category)}</span>
+            <span class="amount ${row.type === 'IN' ? 'in' : 'out'}">${row.type === 'IN' ? '+' : '−'} ${money(row.amount)}</span>
+          </div><div class="meta">${shortDate(row.date)} · ${esc(modeName(row.payment_mode))}${row.by_manager ? ` · ${L('द्वारा', 'by')} ${esc(row.by_manager)}` : ''}</div></div>`;
 
   // Bottom sheet: "Total balance with you (N projects)" + one row per project, tap to switch.
   // Reuses the same .modal/.modal-box pop-up pattern as confirmBox() elsewhere in this file.
@@ -550,12 +558,7 @@
           <div class="fund-row head" role="row"><span>${I18n.t('inTotal')}</span><span>${I18n.t('outTotal')}</span><span>${I18n.t('txnCount')}</span></div>
           <div class="fund-row"><span>${money(mdInTotal)}</span><span>${money(mdOutTotal)}</span><span>${mdCount}</span></div>
         </div>
-        ${mdResults.length ? mdResults.map(row => `
-          <div class="card item"><div class="row">
-            <span class="who">${row.type === 'IN' ? '📥' : '📤'} ${esc(row.description || row.category)}</span>
-            <span class="amount ${row.type === 'IN' ? 'in' : 'out'}">${row.type === 'IN' ? '+' : '−'} ${money(row.amount)}</span>
-          </div><div class="meta">${shortDate(row.date)} · ${esc(modeName(row.payment_mode))}</div></div>`).join('')
-          : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
+        ${mdResults.length ? mdResults.map(txnRowHtml).join('') : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
         ${mdHasNext ? `<button type="button" class="btn line" id="md-more">${I18n.t('loadMore')}</button>` : ''}`;
 
       const projBtn = document.getElementById('md-projects');
@@ -575,12 +578,256 @@
     render();
   }
 
+  // Owner Dashboard: the default landing screen for an owner (or admin) with canViewProjectFunds and
+  // a project selected. Every figure comes straight from projects/<id>/owner-summary/ (core/ledger.py);
+  // nothing here computes money.
+  async function screenOwnerDashboard() {
+    chrome('home');
+    const project = state.project;
+    loading();
+    let summary;
+    try { summary = await api(`projects/${project.id}/owner-summary/`); }
+    catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
+
+    async function loadTxns(reset) {
+      if (reset) { mdPage = 1; mdResults = []; }
+      const { from, to } = mdComputeDates();
+      const r = await api(`projects/${project.id}/transactions/?from=${from}&to=${to}&page=${mdPage}`);
+      mdInTotal = r.in_total; mdOutTotal = r.out_total; mdCount = r.count;
+      mdResults = reset ? r.results : mdResults.concat(r.results);
+      mdHasNext = !!r.next;
+    }
+    try { await loadTxns(true); } catch (e) { mdResults = []; mdHasNext = false; mdInTotal = mdOutTotal = mdCount = 0; }
+
+    function render() {
+      const { from, to } = mdComputeDates();
+      const withMgr = Number(summary.with_managers);
+      const catRows = CATS.map(c => ({ c, total: summary.category_totals[c.key.toLowerCase()] })).filter(x => x.total !== undefined);
+      const maxVal = Math.max(1, ...catRows.map(x => Number(x.total)), Math.abs(withMgr));
+      const bar = (val, cls) => `<div class="bar-track"><div class="bar-fill ${cls || ''}" style="width:${Math.min(100, Math.abs(Number(val)) / maxVal * 100)}%"></div></div>`;
+      $view.innerHTML = `
+        <h1>🏗️ ${esc(project.name)}</h1>
+        <p class="muted">👤 ${L('मालिक', 'Owner')}: <b>${esc(state.user.name)}</b></p>
+        <div class="tot-grid md-fund-cards">
+          <div class="card tot-box"><div class="muted">${L('मैनेजरों को दिया', 'Given to Managers')}</div><div class="big-total">${money(summary.given)}</div></div>
+          <div class="card tot-box"><div class="muted">${L('मैनेजरों ने खर्च किया', 'Spent by Managers')}</div><div class="big-total">${money(summary.spent_by_managers)}</div></div>
+          <div class="card tot-box ${withMgr > 0 ? 'ok' : ''} ${withMgr < 0 ? 'bad' : ''}"><div class="muted">${L('मैनेजरों के पास बचा', 'With Managers')}</div><div class="big-total">${money(summary.with_managers)}</div></div>
+        </div>
+        <h2>${L('श्रेणी अनुसार खर्च', 'Spend by category')}</h2>
+        <div class="cat-bars">${catRows.map(x => `
+          <div class="card item cat-bar"><div class="row"><span class="who">${x.c.icon} ${catLabel(x.c)}</span><span class="amount">${money(x.total)}</span></div>${bar(x.total)}</div>`).join('')}
+          <div class="cat-bar-divider"></div>
+          <a class="card item cat-bar" href="#/managers"><div class="row"><span class="who">💰 ${L('मैनेजरों के पास उपलब्ध फंड', 'Fund available with Managers')}</span><span class="amount">${money(summary.with_managers)} <span class="chev">›</span></span></div>${bar(summary.with_managers, 'ok')}</a>
+        </div>
+        <div class="card item cat-total"><div class="row"><b>${L('कुल प्रोजेक्ट खर्च', 'Total project spend')}</b><b class="amount">${money(summary.total_project_spend)}</b></div></div>
+        <h2>🧾 ${L('लेन-देन', 'Transactions')}</h2>
+        <div class="choices small" id="md-chips">
+          <button type="button" class="choice" data-r="week" aria-pressed="${mdRange === 'week'}">${I18n.t('thisWeek')}</button>
+          <button type="button" class="choice" data-r="month" aria-pressed="${mdRange === 'month'}">${I18n.t('thisMonth')}</button>
+          <button type="button" class="choice" data-r="custom" aria-pressed="${mdRange === 'custom'}">${I18n.t('customRange')}</button>
+        </div>
+        ${mdRange === 'custom' ? `<div class="step" id="md-custom">
+          <label for="md-from">${I18n.t('fromDate')}</label><input id="md-from" type="date" value="${mdFrom || from}">
+          <label for="md-to">${I18n.t('toDate')}</label><input id="md-to" type="date" value="${mdTo || to}">
+        </div>` : ''}
+        <div class="fund-table" role="table">
+          <div class="fund-row head" role="row"><span>${I18n.t('inTotal')}</span><span>${I18n.t('outTotal')}</span><span>${I18n.t('txnCount')}</span></div>
+          <div class="fund-row"><span>${money(mdInTotal)}</span><span>${money(mdOutTotal)}</span><span>${mdCount}</span></div>
+        </div>
+        ${mdResults.length ? mdResults.map(txnRowHtml).join('') : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
+        ${mdHasNext ? `<button type="button" class="btn line" id="md-more">${I18n.t('loadMore')}</button>` : ''}`;
+
+      document.getElementById('md-chips').querySelectorAll('button').forEach(b => b.onclick = async () => {
+        mdRange = b.dataset.r;
+        if (mdRange !== 'custom') { loading(); await loadTxns(true); render(); } else render();
+      });
+      const fromEl = document.getElementById('md-from'), toEl = document.getElementById('md-to');
+      if (fromEl && toEl) {
+        const applyCustom = async () => { mdFrom = fromEl.value; mdTo = toEl.value; loading(); await loadTxns(true); render(); };
+        fromEl.onchange = applyCustom; toEl.onchange = applyCustom;
+      }
+      const more = document.getElementById('md-more');
+      if (more) more.onclick = async () => { mdPage += 1; more.disabled = true; more.textContent = '…'; await loadTxns(false); render(); };
+    }
+    render();
+  }
+
+  // Managers screen (#/managers): every manager on this project, given/spent/balance, tap through to
+  // their read-only detail. Same 3 cards as the Owner Dashboard.
+  async function screenManagers() {
+    chrome('managers', '#/home');
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    loading();
+    let summary;
+    try { summary = await api(`projects/${state.project.id}/owner-summary/`); }
+    catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
+    const withMgr = Number(summary.with_managers);
+    const initials2 = n => (n || '').trim().split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase();
+    $view.innerHTML = `
+      <h1>🧑‍💼 ${L('मैनेजर', 'Managers')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
+      <div class="tot-grid md-fund-cards">
+        <div class="card tot-box"><div class="muted">${L('मैनेजरों को दिया', 'Given to Managers')}</div><div class="big-total">${money(summary.given)}</div></div>
+        <div class="card tot-box"><div class="muted">${L('मैनेजरों ने खर्च किया', 'Spent by Managers')}</div><div class="big-total">${money(summary.spent_by_managers)}</div></div>
+        <div class="card tot-box ${withMgr > 0 ? 'ok' : ''} ${withMgr < 0 ? 'bad' : ''}"><div class="muted">${L('मैनेजरों के पास बचा', 'With Managers')}</div><div class="big-total">${money(summary.with_managers)}</div></div>
+      </div>` +
+      (summary.managers.length ? summary.managers.map(m => `
+        <a class="card item mgr-row" href="#/managers/${m.id}">
+          <span class="mgr-avatar">${esc(initials2(m.name))}</span>
+          <span class="mgr-mid"><b>${esc(m.name)}</b><span class="meta">${L('दिया', 'Given')} ${money(m.given)} · ${L('खर्च', 'Spent')} ${money(m.spent)}</span></span>
+          <span class="mgr-bal"><span class="meta">${L('बचा हुआ', 'Balance')}</span><b class="${Number(m.balance) < 0 ? 'amount-bad' : 'amount-ok'}">${money(m.balance)}</b></span>
+          <span class="chev">›</span>
+        </a>`).join('') : `<div class="empty">${L('इस प्रोजेक्ट में अभी कोई मैनेजर नहीं है.', 'No manager on this project yet.')}</div>`) +
+      (can('canGiveManagerFund') ? `<a class="btn green" href="#/givefund">➕ ${L('मैनेजर को फंड दें', 'Give Fund to Manager')}</a>` : '');
+  }
+
+  // Manager detail (#/managers/<id>): owner's read-only view of one manager's dashboard, built from
+  // the same manager-summary/transactions endpoints the Manager Dashboard itself uses (?manager_id=).
+  async function screenManagerDetail(managerId) {
+    chrome('managers', '#/managers');
+    if (!state.project) { $view.innerHTML = noProject(); return; }
+    loading();
+    const project = state.project;
+    let summary, funds, ownerSummary;
+    try {
+      [summary, funds, ownerSummary] = await Promise.all([
+        api(`projects/${project.id}/manager-summary/?manager_id=${managerId}`),
+        api(`manager-funds/?project=${project.id}&manager=${managerId}`),
+        api(`projects/${project.id}/owner-summary/`),
+      ]);
+    } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
+
+    const allowedView = (summary.allowed_categories && summary.allowed_categories.view) || [];
+    const cards = DASH_CATS.map(k => CAT[k]).filter(c => allowedView.includes(c.key.toLowerCase()));
+    const fundsTotal = funds.reduce((s, f) => s + Number(f.fund_amount), 0);
+    const name = (ownerSummary.managers.find(m => m.id === managerId) || {}).name || (funds[0] || {}).manager_name || L('मैनेजर', 'Manager');
+
+    async function loadTxns(reset) {
+      if (reset) { mdPage = 1; mdResults = []; }
+      const { from, to } = mdComputeDates();
+      const r = await api(`projects/${project.id}/transactions/?manager_id=${managerId}&from=${from}&to=${to}&page=${mdPage}`);
+      mdInTotal = r.in_total; mdOutTotal = r.out_total; mdCount = r.count;
+      mdResults = reset ? r.results : mdResults.concat(r.results);
+      mdHasNext = !!r.next;
+    }
+    try { await loadTxns(true); } catch (e) { mdResults = []; mdHasNext = false; mdInTotal = mdOutTotal = mdCount = 0; }
+
+    function render() {
+      const { from, to } = mdComputeDates();
+      const bal = Number(summary.balance);
+      $view.innerHTML = `
+        <h1>👤 ${esc(name || L('मैनेजर', 'Manager'))}</h1>
+        <p class="muted">${L('मैनेजर', 'Manager')} · <b>${esc(project.name)}</b> <span class="pill">${L('सिर्फ़ देखने के लिए', 'View only')}</span></p>
+        <div class="tot-grid md-fund-cards">
+          <div class="card tot-box"><div class="muted">${I18n.t('fundReceivedTitle')}</div><div class="big-total">${money(summary.fund_received)}</div></div>
+          <div class="card tot-box"><div class="muted">${I18n.t('totalDistributedTitle')}</div><div class="big-total">${money(summary.total_distributed)}</div></div>
+          <div class="card tot-box ${bal > 0 ? 'ok' : ''} ${bal < 0 ? 'bad' : ''}"><div class="muted">${I18n.t('availableBalanceTitle')}</div><div class="big-total">${money(summary.balance)}</div></div>
+        </div>
+        ${cards.length ? `<h2>${L('श्रेणी अनुसार', 'By Category')}</h2><div class="md-cat-grid">` + cards.map(c => `
+          <div class="card item"><div class="row"><span class="who">${c.icon} ${catLabel(c)}</span><span class="amount">${money((summary.category_totals || {})[c.key.toLowerCase()])}</span></div></div>`).join('') + `</div>` : ''}
+        <h2>📥 ${L('फंड मिला', 'Fund Given')} <span class="muted">(${money(fundsTotal)})</span></h2>
+        ${funds.length ? funds.map(f => `
+          <div class="card item"><div class="row"><span class="who">${shortDate(f.fund_date)} · ${esc(modeName(f.payment_mode))}</span><span class="amount">${money(f.fund_amount)}</span></div></div>`).join('')
+          : `<div class="empty">${L('अभी कोई फंड नहीं मिला.', 'No fund given yet.')}</div>`}
+        <h2>🧾 ${L('लेन-देन', 'Transactions')} <span class="pill">${L('सिर्फ़ देखने के लिए', 'View only')}</span></h2>
+        <div class="choices small" id="md-chips">
+          <button type="button" class="choice" data-r="week" aria-pressed="${mdRange === 'week'}">${I18n.t('thisWeek')}</button>
+          <button type="button" class="choice" data-r="month" aria-pressed="${mdRange === 'month'}">${I18n.t('thisMonth')}</button>
+          <button type="button" class="choice" data-r="custom" aria-pressed="${mdRange === 'custom'}">${I18n.t('customRange')}</button>
+        </div>
+        ${mdRange === 'custom' ? `<div class="step" id="md-custom">
+          <label for="md-from">${I18n.t('fromDate')}</label><input id="md-from" type="date" value="${mdFrom || from}">
+          <label for="md-to">${I18n.t('toDate')}</label><input id="md-to" type="date" value="${mdTo || to}">
+        </div>` : ''}
+        <div class="fund-table" role="table">
+          <div class="fund-row head" role="row"><span>${I18n.t('inTotal')}</span><span>${I18n.t('outTotal')}</span><span>${I18n.t('txnCount')}</span></div>
+          <div class="fund-row"><span>${money(mdInTotal)}</span><span>${money(mdOutTotal)}</span><span>${mdCount}</span></div>
+        </div>
+        ${mdResults.length ? mdResults.map(txnRowHtml).join('') : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
+        ${mdHasNext ? `<button type="button" class="btn line" id="md-more">${I18n.t('loadMore')}</button>` : ''}
+        ${can('canGiveManagerFund') ? `<a class="btn green" id="mgr-givefund" href="#/givefund">➕ ${L('फंड दें', 'Give Fund to')} ${esc(name)}</a>` : ''}`;
+
+      const giveBtn = document.getElementById('mgr-givefund');
+      if (giveBtn) giveBtn.onclick = () => { fundManager = managerId; };
+      document.getElementById('md-chips').querySelectorAll('button').forEach(b => b.onclick = async () => {
+        mdRange = b.dataset.r;
+        if (mdRange !== 'custom') { loading(); await loadTxns(true); render(); } else render();
+      });
+      const fromEl = document.getElementById('md-from'), toEl = document.getElementById('md-to');
+      if (fromEl && toEl) {
+        const applyCustom = async () => { mdFrom = fromEl.value; mdTo = toEl.value; loading(); await loadTxns(true); render(); };
+        fromEl.onchange = applyCustom; toEl.onchange = applyCustom;
+      }
+      const more = document.getElementById('md-more');
+      if (more) more.onclick = async () => { mdPage += 1; more.disabled = true; more.textContent = '…'; await loadTxns(false); render(); };
+    }
+    render();
+  }
+
+  // Super Admin Dashboard: the default landing screen for a super admin with canViewAllProjects.
+  // Project-agnostic (no project switcher) -- every figure comes from GET admin-summary/.
+  const ATTN_LABEL = t => t === 'no_manager' ? L('असाइन करें', 'Assign') : L('समीक्षा करें', 'Review');
+  const ATTN_ICON = t => t === 'no_manager' ? '⚠️' : '🔒';
+  async function screenSuperAdminDashboard() {
+    chrome('home');
+    loading();
+    let summary;
+    try { summary = await api('admin-summary/'); }
+    catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
+
+    $view.innerHTML = `
+      <h1>🏢 ${L('सभी प्रोजेक्ट', 'All Projects')}</h1>
+      <div class="tot-grid md-fund-cards">
+        <div class="card tot-box"><div class="muted">${L('सक्रिय प्रोजेक्ट', 'Active Projects')}</div><div class="big-total">${summary.active_projects}</div></div>
+        <div class="card tot-box"><div class="muted">${L('कुल खर्च', 'Total Spent')}</div><div class="big-total">${money(summary.total_spent)}</div></div>
+        <div class="card tot-box"><div class="muted">${L('यूज़र', 'Users')}</div><div class="big-total">${summary.users}</div></div>
+      </div>
+      ${summary.attention.length ? `<h2>⚠️ ${L('ध्यान चाहिए', 'Needs attention')}</h2>` + summary.attention.map(a => `
+        <div class="card item mgr-row">
+          <span class="mgr-avatar">${ATTN_ICON(a.type)}</span>
+          <span class="mgr-mid"><b>${esc(a.label)}</b></span>
+          <button type="button" class="btn line attn-action" data-type="${a.type}" data-id="${a.target_id}" style="min-height:44px;width:auto;margin:0;padding:6px 16px;font-size:.95rem">${ATTN_LABEL(a.type)}</button>
+        </div>`).join('') : ''}
+      <h2>🏗️ ${L('प्रोजेक्ट', 'Projects')}</h2>
+      ${summary.projects.length ? summary.projects.map(p => `
+        <button type="button" class="card pick item mgr-row proj-row" data-p="${p.id}">
+          <span class="mgr-mid"><b>${esc(p.name)}</b> <span class="pill">${esc(statusLabel(p.status))}</span><span class="meta">${esc(p.managers.join(', ') || L('कोई मैनेजर नहीं', 'No manager'))}</span></span>
+          <span class="mgr-bal"><b>${money(p.spent)}</b></span>
+          <span class="chev">›</span>
+        </button>`).join('') : `<div class="empty">${L('अभी कोई प्रोजेक्ट नहीं है.', 'No projects yet.')}</div>`}
+      <h2>⚡ ${L('त्वरित कार्रवाई', 'Quick actions')}</h2>
+      <div class="qa-grid">
+        ${can('canCreateProject') ? `<a class="btn line qa" href="#/settings/new">➕ ${L('नया प्रोजेक्ट', 'New Project')}</a>` : ''}
+        ${can('canManagePermissions') ? `<a class="btn line qa" href="#/access">🔐 ${L('यूज़र और एक्सेस', 'Users & Access')}</a>` : ''}
+        ${can('canManagePermissions') ? `<a class="btn line qa" href="#/settings">⚙️ ${L('प्रोजेक्ट सेटिंग्स', 'Project Settings')}</a>` : ''}
+        ${can('canViewReports') ? `<a class="btn line qa" href="#/reports">📊 ${L('रिपोर्ट', 'Reports')}</a>` : ''}
+      </div>`;
+
+    $view.querySelectorAll('.attn-action').forEach(b => b.onclick = () => {
+      if (b.dataset.type === 'no_manager') { location.hash = `#/settings/${b.dataset.id}`; }
+      else { ac.selectedUserId = Number(b.dataset.id); location.hash = '#/access/users'; }
+    });
+    // Tap a project row: same "select a project" mechanism as the existing switcher (screenProject),
+    // then open that project's dashboard using the Owner widgets directly (a super admin has no
+    // project of their own to land on via screenHome's normal branching).
+    $view.querySelectorAll('.proj-row').forEach(b => b.onclick = async () => {
+      const p = state.realProjects.find(x => x.id === Number(b.dataset.p));
+      if (!p) return;
+      state.project = p; store.set('projectId', p.id); state.names = null;
+      await screenOwnerDashboard();
+    });
+  }
+
   async function screenHome() {
     chrome('home');
     const proj = state.project;
-    // Manager Dashboard is the default landing screen once a manager has a project selected;
-    // everyone else (owner/admin/viewer) keeps the plain quick-links screen below.
+    // Manager Dashboard is the default landing screen once a manager has a project selected; a
+    // super admin (project-agnostic: no project switcher) gets the Super Admin Dashboard; an owner
+    // with the fund-visibility permission gets the Owner Dashboard; everyone else (a plain owner
+    // without that permission, or a viewer) keeps the quick-links screen.
     if (proj && state.me.manager_id) { await screenManagerDashboard(); return; }
+    if (state.user.role === 'super_admin' && can('canViewAllProjects')) { await screenSuperAdminDashboard(); return; }
+    if (proj && state.me.owner_id && can('canViewProjectFunds')) { await screenOwnerDashboard(); return; }
     $view.innerHTML = `
       <h1>${L('नमस्ते', 'Hello')}, ${esc(state.user.name)} 🙏</h1>
       ${proj ? `<p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(proj.name)}</b></p>` : noProject()}
@@ -649,7 +896,7 @@
   async function screenAdd(params) {
     chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
-    if (!allowedCats().length) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
+    if (!allowedCats().length && !can('canGiveManagerFund')) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
     loading();
     let names;
     try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionAdd)); return; }
@@ -676,7 +923,7 @@
         <select id="owner"><option value="">${L('— मालिक चुनिए —', '— Choose an owner —')}</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
         <div class="field-error" id="e-owner"></div></div>` : ''}
       <div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
-        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}</div>
+        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
         <div class="field-error" id="e-cat"></div></div>
       <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>${L('कितना पैसा?', 'Amount')}</label>
         <div class="rupee"><span>₹</span><input id="amt" type="text" inputmode="decimal" pattern="[0-9.]*" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
@@ -2466,7 +2713,7 @@
     $view.innerHTML = `${title}<div id="gmsg"></div>
       <form id="gf" novalidate>
         <label for="g-mgr">${L('मैनेजर', 'Manager')} *</label>
-        <select id="g-mgr"><option value="">${L('— चुनिए —', '— Choose —')}</option>${options(people.managers)}</select>
+        <select id="g-mgr"><option value="">${L('— चुनिए —', '— Choose —')}</option>${people.managers.map(x => `<option value="${x.id}" ${x.id === fundManager ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select>
         ${onBehalf ? `<label for="g-own">${L('किस मालिक ने दिया', 'Given by owner')} *</label>
           <select id="g-own"><option value="">${L('— चुनिए —', '— Choose —')}</option>${options(people.owners)}</select>`
           : `<p class="muted">${L('दिया', 'Given by')}: <b>${esc(state.me.name)}</b></p>`}
@@ -2650,6 +2897,7 @@
       case 'access': return screenAccess(arg, params);
       case 'fund': return screenFund();
       case 'givefund': return screenGiveFund();
+      case 'managers': return arg ? screenManagerDetail(Number(arg)) : screenManagers();
       case 'distribute': return screenDistribute();
       case 'resetpw': return screenResetPassword(arg);
       default: return screenHome();

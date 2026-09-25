@@ -434,6 +434,30 @@ body.typing main { padding-bottom: 24px; }
 .list-day-head { font-weight: 800; color: var(--blue); margin-bottom: 4px; }
 @media (min-width: 720px) { .md-fund-cards.tot-grid, .md-cat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 
+/* Owner Dashboard: "Spend by category" bars (web/app.js screenOwnerDashboard) and #/managers'
+   manager rows / #/managers/<id>'s detail (screenManagers/screenManagerDetail). Still .md-*-scoped. */
+.cat-bars { display: flex; flex-direction: column; gap: 8px; }
+.cat-bar { margin: 0; }
+.cat-bar .amount { display: inline-flex; align-items: center; gap: 4px; }
+.bar-track { margin-top: 8px; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.bar-fill { height: 100%; background: var(--blue); border-radius: 4px; }
+.bar-fill.ok { background: var(--green); }
+.cat-bar-divider { height: 2px; background: var(--line); margin: 4px 0; }
+.cat-total { margin-top: 4px; border-color: var(--blue); background: var(--blue-soft); }
+.chev { color: var(--muted); font-size: 1.3rem; line-height: 1; }
+.amount-ok { color: var(--green); }
+.amount-bad { color: var(--red); }
+.mgr-row { display: flex; align-items: center; gap: 12px; min-height: 64px; text-decoration: none; color: inherit; }
+.mgr-avatar { flex: 0 0 auto; width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--blue-soft); color: var(--blue); font-weight: 800; }
+.mgr-mid { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.mgr-mid b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mgr-bal { flex: 0 0 auto; text-align: right; }
+.mgr-bal b { display: block; white-space: nowrap; }
+
+/* Super Admin Dashboard quick actions (web/app.js screenSuperAdminDashboard). */
+.qa-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.qa-grid .qa { margin: 0; min-height: 56px; }
+
 @media (max-width: 480px) {
   /* Never let a long name/date push the amount off-screen: the row itself already flexes
      (see .row above), this just lets its first child shrink and truncate instead of wrapping. */

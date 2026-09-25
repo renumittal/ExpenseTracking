@@ -569,10 +569,10 @@ class MeEffectivePermissionsTests(LedgerBase):
         d = self.me(self.owner_user)
         self.assertEqual(d['permissions'], {
             'canUploadBill': True, 'canViewBill': True, 'canViewManagerFund': True,
-            'canGiveManagerFund': True, 'canDistributeManagerFund': False})
+            'canGiveManagerFund': True, 'canDistributeManagerFund': False, 'canViewProjectFunds': True})
         self.assertEqual(set(d['project_permissions']), {str(self.project.id)})          # not project B
         self.assertEqual(set(d['project_permissions'][str(self.project.id)]),
-                         {'canViewManagerFund', 'canGiveManagerFund', 'canUploadBill', 'canViewBill'})
+                         {'canViewManagerFund', 'canGiveManagerFund', 'canUploadBill', 'canViewBill', 'canViewProjectFunds'})
 
     def test_manager_gets_only_view_and_distribute(self):
         d = self.me(self.manager_user)
@@ -586,7 +586,7 @@ class MeEffectivePermissionsTests(LedgerBase):
         self.assertTrue(d['is_super_admin'])
         self.assertTrue(all(d['permissions'].values()))
         self.assertEqual(set(d['project_permissions']), {str(self.project.id), str(self.other_project.id)})
-        self.assertEqual(len(d['project_permissions'][str(self.project.id)]), 5)
+        self.assertEqual(len(d['project_permissions'][str(self.project.id)]), 6)
 
     def test_the_permission_matrix_changes_what_is_reported(self):
         RolePermission.objects.update_or_create(role='MANAGER', permission='canDistributeManagerFund', defaults={'allowed': False})

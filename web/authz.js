@@ -58,6 +58,7 @@
     { key: 'canResetUserPassword',     group: 'project', label: 'Reset User Password',    roles: OWN },
 
     { key: 'canCreateProject',              group: 'app', label: 'Create Project',        roles: ADM, fixed: SA_ON },
+    { key: 'canViewAllProjects',            group: 'app', label: 'View All Projects',     roles: ADM, fixed: SA_ON },
     { key: 'canManageUsers',                group: 'app', label: 'Manage Users',          roles: ADM, fixed: SA_ON },
     { key: 'canManageApplicationSettings',  group: 'app', label: 'Application Settings',  roles: ADM, fixed: SA_ON },
     // Only SUPER_ADMIN can ever open the Role & Permissions screen; nobody else can be given it.
@@ -109,6 +110,7 @@
     settings: 'canManagePermissions',
     permissions: 'canManagePermissions', access: 'canManagePermissions', resetpw: 'canResetUserPassword', profile: 'canChangeOwnPassword',
     fund: 'canViewManagerFund', givefund: 'canGiveManagerFund', distribute: 'canDistributeManagerFund',
+    managers: 'canViewProjectFunds',
   };
   const reportPermission = key => REPORT_PERMISSION[key] || 'canViewReports';
   const CATEGORIES = ['LABOUR', 'CONTRACTOR', 'SUPPLIER', 'MISCELLANEOUS'];
@@ -136,6 +138,7 @@
     { id: 'suppliers',   hash: '#/report/SUPPLIER', icon: '🚚', hi: 'सप्लायर', en: 'Suppliers',   perm: 'canViewSuppliers' },
     { id: 'contractors', hash: '#/report/CONTRACTOR', icon: '🧱', hi: 'ठेकेदार', en: 'Contractors', perm: 'canViewContractors' },
     { id: 'fund',        hash: '#/fund',          icon: '💰', hi: 'फंड',       en: 'Manager Fund', perm: 'canViewManagerFund' },
+    { id: 'managers',    hash: '#/managers',      icon: '🧑‍💼', hi: 'मैनेजर',    en: 'Managers',    perm: 'canViewProjectFunds' },
     { id: 'users',       hash: '#/users',         icon: '👥', hi: 'यूज़र',      en: 'Users',       perm: 'canManageUsers' },
     // No Settings entry here on purpose: it is super-admin only and lives in the top-right user
     // menu (renderUserbar in app.js), never the bottom nav / "Menu" sheet.

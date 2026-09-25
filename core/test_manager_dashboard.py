@@ -264,3 +264,84 @@ class CategoryPermissionEnforcementTests(LedgerBase):
         self.auth_as(self.owner_user)
         ids = {row['id'] for row in self.client.get(f'/api/expense-transactions/?project={self.project.id}').data}
         self.assertIn(tx_id, ids)
+
+
+class OwnerSummaryEndpointTests(LedgerBase):
+    def setUp(self):
+        super().setUp()
+        self.give('50000.00', '2026-09-01')
+        self.batch([(self.labours[0], D('10000'))], date='2026-09-02')
+
+    def owner_summary(self, user):
+        self.auth_as(user)
+        return self.client.get(f'/api/projects/{self.project.id}/owner-summary/')
+
+    def test_403_for_owner_of_another_project(self):
+        r = self.owner_summary(self.owner_b_user)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_total_project_spend_equals_total_expense_plus_with_managers(self):
+        r = self.owner_summary(self.owner_user)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['total_project_spend']), D(r.data['total_expense']) + D(r.data['with_managers']))
+        self.assertEqual(D(r.data['given']), D('50000.00'))
+        self.assertEqual(D(r.data['spent_by_managers']), D('10000.00'))
+        self.assertEqual(D(r.data['with_managers']), D('40000.00'))
+        self.assertEqual({m['id'] for m in r.data['managers']}, {self.manager.id})
+
+    def test_admin_can_view_any_project(self):
+        r = self.owner_summary(self.admin_user)
+        self.assertEqual(r.status_code, 200)
+
+
+class ManagerDetailCreateEnforcementTests(LedgerBase):
+    """Manager detail (owner viewing a manager's dashboard, ?manager_id=) is read-only for the owner --
+    it never grants them a create permission they don't already have; the ordinary create endpoint
+    keeps enforcing CATEGORY_PERMISSION exactly as before."""
+
+    def test_owner_without_create_permission_is_rejected(self):
+        RolePermission.objects.update_or_create(role='OWNER', permission='canAddMiscExpense', defaults={'allowed': False})
+        self.auth_as(self.owner_user)
+        r = self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-10', 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Tea stall',
+            'paid_by_owner': self.owner.id, 'amount': '100.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(ExpenseTransaction.objects.filter(expense_category=ExpenseCategory.MISCELLANEOUS).count(), 0)
+
+
+class OwnerTransactionsScopeTests(LedgerBase):
+    def setUp(self):
+        super().setUp()
+        self.give('20000.00', '2026-09-01')
+
+    def transactions(self, user, **params):
+        self.auth_as(user)
+        qs = '&'.join(f'{k}={v}' for k, v in params.items())
+        return self.client.get(f'/api/projects/{self.project.id}/transactions/' + (f'?{qs}' if qs else ''))
+
+    def test_owner_out_total_excludes_manager_expense_rows(self):
+        # Manager records an Other expense from their fund -- counts toward the manager's own spend
+        # (Manager Dashboard), but not toward the owner's out_total: it was already paid for by the
+        # fund given, so adding it again here would double count the same money.
+        self.auth_as(self.manager_user)
+        self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-05', 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Tea stall',
+            'paid_by_owner': self.owner.id, 'amount': '500.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+        self.auth_as(self.owner_user)
+        self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-06', 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Diesel',
+            'paid_by_owner': self.owner.id, 'amount': '300.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+
+        r = self.transactions(self.owner_user, **{'from': '2026-09-01', 'to': '2026-09-30'})
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['out_total']), D('20300.00'))          # owner_direct (300) + fund given (20000)
+        manager_rows = [row for row in r.data['results'] if row.get('by_manager')]
+        self.assertEqual(len(manager_rows), 1)
+        self.assertEqual(manager_rows[0]['by_manager'], self.manager.name)
+        self.assertEqual(D(manager_rows[0]['amount']), D('500.00'))

@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from django.db.models import F, Max, Q, Sum
+from django.db.models import Exists, F, Max, OuterRef, Q, Sum
 from rest_framework import mixins, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.authtoken.views import ObtainAuthToken
@@ -30,9 +30,12 @@ from .models import (
     PartyType,
     Project,
     ProjectLabour,
+    ProjectStatus,
     Role,
+    ScopeType,
     Supplier,
     TransactionStatus,
+    UserAccess,
     ZERO,
     annotate_last_paid,
 )
@@ -50,6 +53,7 @@ from .permissions import (
     CAN_MANAGE_SUPPLIERS,
     CAN_RECORD_LABOUR_PAYMENT,
     CAN_UPLOAD_BILL,
+    CAN_VIEW_ALL_PROJECTS,
     CAN_VIEW_BILL,
     CAN_VIEW_CONTRACTORS,
     CAN_VIEW_EXPENSES,
@@ -417,6 +421,46 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         if not is_project_member(user, project):
             raise PermissionDenied('You do not have access to this project.')
 
+    @action(detail=True, methods=['get'], url_path='owner-summary')
+    def owner_summary(self, request, pk=None):
+        """
+        Owner Dashboard summary card data for this project: money given to managers / spent by
+        managers / still with managers, category totals (limited to categories this user may view),
+        the project's total_expense and total_project_spend, and a per-manager breakdown -- every
+        figure from core/ledger.py, nothing computed here. Owner-level: needs canViewProjectFunds
+        on this project (or admin).
+        """
+        project = self._project_or_404(pk)
+        user = request.user
+        if not (is_admin(user) or can_view_project_funds(user, project)):
+            raise PermissionDenied("You do not have permission to view this project's fund summary.")
+
+        managers = list(ledger.project_managers(project))
+        given = sum((ledger.fund_given(project, m) for m in managers), ZERO)
+        spent_by_managers = sum((ledger.manager_spent(project, m) for m in managers), ZERO)
+
+        allowed_view = _viewable_categories(user, project)
+        all_totals = ledger.category_totals(project)
+        category_totals = {cat.lower(): all_totals[cat] for cat in allowed_view}
+
+        return Response({
+            'given': given,
+            'spent_by_managers': spent_by_managers,
+            'with_managers': ledger.with_managers(project),
+            'category_totals': category_totals,
+            'total_expense': ledger.total_expense(project),
+            'total_project_spend': ledger.total_project_spend(project),
+            'managers': [
+                {
+                    'id': m.id, 'name': m.name,
+                    'given': ledger.fund_given(project, m),
+                    'spent': ledger.manager_spent(project, m),
+                    'balance': ledger.manager_balance(project, m),
+                }
+                for m in managers
+            ],
+        })
+
     @action(detail=True, methods=['get'], url_path='manager-summary')
     def manager_summary(self, request, pk=None):
         """
@@ -485,10 +529,18 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         GET .../transactions/?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1[&manager_id=][&category=]
         -> {in_total, out_total, count, results, next}
 
-        "In" = ManagerFund the requesting user (or, with ?manager_id=, another manager -- gated by
-        canViewProjectFunds) received on this project; "Out" = ACTIVE ExpenseTransaction rows they
-        recorded, limited to categories they're permitted for and, if given, to ?category=. Default
-        range (no from/to) = the current calendar month. Paginated 20/page, date-desc sorted.
+        Manager scope (the requesting user is a manager, or ?manager_id= names one -- gated by
+        canViewProjectFunds): "In" = ManagerFund that manager received; "Out" = ACTIVE
+        ExpenseTransaction rows they recorded, limited to categories they're permitted for.
+
+        Owner/admin scope (no manager involved): whole-project view. "In" is always 0 (owners have
+        no incoming-money model). "Out" rows are the owner-direct expenses and every fund given to a
+        manager (out_total = owner_direct + fund given, core/ledger.py's own identity); manager-
+        recorded expense rows are also listed, tagged `by_manager`, but excluded from out_total since
+        that money already left the owner's hands as the fund that paid for it (no double count).
+
+        Both scopes: limited to ?category= if given, default range (no from/to) = the current
+        calendar month, paginated 20/page, date-desc sorted.
         """
         project = self._project_or_404(pk)
         user = request.user
@@ -505,41 +557,95 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         today = timezone.localdate()
         date_from = request.query_params.get('from') or today.replace(day=1).isoformat()
         date_to = request.query_params.get('to') or today.isoformat()
-
-        allowed = _allowed_categories(subject_user, project)
         category = (request.query_params.get('category') or '').upper()
-        if category:
-            allowed = [c for c in allowed if c == category]
 
-        in_qs = ManagerFund.objects.none()
-        if subject_manager is not None and not category:
-            in_qs = ManagerFund.objects.filter(
-                project=project, manager=subject_manager, status=TransactionStatus.ACTIVE,
-                fund_date__gte=date_from, fund_date__lte=date_to,
+        if subject_manager is not None:
+            allowed = _allowed_categories(subject_user, project)
+            if category:
+                allowed = [c for c in allowed if c == category]
+
+            in_qs = ManagerFund.objects.none()
+            if not category:
+                in_qs = ManagerFund.objects.filter(
+                    project=project, manager=subject_manager, status=TransactionStatus.ACTIVE,
+                    fund_date__gte=date_from, fund_date__lte=date_to,
+                )
+            out_qs = ExpenseTransaction.objects.filter(
+                project=project, created_by=subject_user, status=TransactionStatus.ACTIVE,
+                expense_category__in=allowed, expense_date__gte=date_from, expense_date__lte=date_to,
             )
-        out_qs = ExpenseTransaction.objects.filter(
-            project=project, created_by=subject_user, status=TransactionStatus.ACTIVE,
-            expense_category__in=allowed, expense_date__gte=date_from, expense_date__lte=date_to,
-        )
 
-        in_total = in_qs.aggregate(t=Sum('fund_amount'))['t'] or ZERO
-        out_total = out_qs.aggregate(t=Sum('amount'))['t'] or ZERO
+            in_total = in_qs.aggregate(t=Sum('fund_amount'))['t'] or ZERO
+            out_total = out_qs.aggregate(t=Sum('amount'))['t'] or ZERO
 
-        rows = [
-            {
-                'id': f'fund-{f.id}', 'type': 'IN', 'category': 'FUND', 'date': f.fund_date,
-                'amount': f.fund_amount, 'payment_mode': f.payment_mode,
-                'description': f'Fund received from {f.given_by_owner.name}',
+            rows = [
+                {
+                    'id': f'fund-{f.id}', 'type': 'IN', 'category': 'FUND', 'date': f.fund_date,
+                    'amount': f.fund_amount, 'payment_mode': f.payment_mode,
+                    'description': f'Fund received from {f.given_by_owner.name}', 'by_manager': None,
+                }
+                for f in in_qs.select_related('given_by_owner')
+            ] + [
+                {
+                    'id': f'expense-{e.id}', 'type': 'OUT', 'category': e.expense_category.lower(), 'date': e.expense_date,
+                    'amount': e.amount, 'payment_mode': e.payment_mode,
+                    'description': e.description or e.expense_type, 'by_manager': None,
+                }
+                for e in out_qs
+            ]
+        else:
+            # Owner/admin: whole project. Rows created by a user who is a MANAGER on this project are
+            # "manager expense" rows (tagged, shown, but not summed into out_total); everything else
+            # the owner recorded directly is an "owner direct" row (summed).
+            allowed = _viewable_categories(user, project)
+            if category:
+                allowed = [c for c in allowed if c == category]
+            manager_user_ids = {
+                m.user_id: m.name for m in Manager.objects.filter(
+                    user__in=services.users_with_role(project, 'MANAGER'))
             }
-            for f in in_qs.select_related('given_by_owner')
-        ] + [
-            {
-                'id': f'expense-{e.id}', 'type': 'OUT', 'category': e.expense_category.lower(), 'date': e.expense_date,
-                'amount': e.amount, 'payment_mode': e.payment_mode,
-                'description': e.description or e.expense_type,
-            }
-            for e in out_qs
-        ]
+
+            fund_qs = ManagerFund.objects.none()
+            if not category:
+                fund_qs = ManagerFund.objects.filter(
+                    project=project, status=TransactionStatus.ACTIVE,
+                    fund_date__gte=date_from, fund_date__lte=date_to,
+                )
+            expense_qs = ExpenseTransaction.objects.filter(
+                project=project, status=TransactionStatus.ACTIVE, expense_category__in=allowed,
+                expense_date__gte=date_from, expense_date__lte=date_to,
+            )
+            owner_qs = expense_qs.exclude(created_by_id__in=manager_user_ids)
+            manager_qs = expense_qs.filter(created_by_id__in=manager_user_ids)
+
+            in_total = ZERO
+            out_total = (
+                (owner_qs.aggregate(t=Sum('amount'))['t'] or ZERO)
+                + (fund_qs.aggregate(t=Sum('fund_amount'))['t'] or ZERO)
+            )
+
+            rows = [
+                {
+                    'id': f'fund-{f.id}', 'type': 'OUT', 'category': 'FUND', 'date': f.fund_date,
+                    'amount': f.fund_amount, 'payment_mode': f.payment_mode,
+                    'description': f'Fund given to {f.manager.name}', 'by_manager': None,
+                }
+                for f in fund_qs.select_related('manager')
+            ] + [
+                {
+                    'id': f'expense-{e.id}', 'type': 'OUT', 'category': e.expense_category.lower(), 'date': e.expense_date,
+                    'amount': e.amount, 'payment_mode': e.payment_mode,
+                    'description': e.description or e.expense_type, 'by_manager': None,
+                }
+                for e in owner_qs
+            ] + [
+                {
+                    'id': f'expense-{e.id}', 'type': 'OUT', 'category': e.expense_category.lower(), 'date': e.expense_date,
+                    'amount': e.amount, 'payment_mode': e.payment_mode,
+                    'description': e.description or e.expense_type, 'by_manager': manager_user_ids.get(e.created_by_id),
+                }
+                for e in manager_qs
+            ]
         rows.sort(key=lambda r: (r['date'], r['id']), reverse=True)
 
         count = len(rows)
@@ -784,7 +890,14 @@ class ManagerFundViewSet(viewsets.ModelViewSet):
         if not can_view_manager_fund(self.request.user):
             raise PermissionDenied('You do not have permission to view manager funds.')
         qs = ManagerFund.objects.select_related('manager', 'given_by_owner', 'project')
-        return _filter_by_params(_scope(qs, self.request.user), self.request.query_params)
+        params = self.request.query_params
+        if params.get('status'):
+            qs = qs.filter(status=params['status'])
+        elif self.action == 'list':
+            # Active only by default -- but only for the plain listing: retrieve/cancel/summary/
+            # statement must still be able to find a cancelled fund (e.g. to refuse a double cancel).
+            qs = qs.filter(status=TransactionStatus.ACTIVE)
+        return _filter_by_params(_scope(qs, self.request.user), params)
 
     def create(self, request, *args, **kwargs):
         project_id = request.data.get('project')
@@ -924,6 +1037,71 @@ class ManagerSummaryView(APIView):
             for fund in funds
         ]
         return Response(data)
+
+
+class AdminSummaryView(APIView):
+    """
+    GET /api/admin-summary/ -- Super Admin Dashboard: counts, total spend (every figure from
+    core/ledger.py, summed per project -- nothing computed here), an attention list (an active
+    project with no manager assigned; an active, non-superuser user with no access role at all --
+    each its own single annotate/exists query, no N+1), and a project-wise list with each project's
+    managers and spend. canViewAllProjects only (in practice: super admin).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        if not (is_admin(user) or has_permission(user, CAN_VIEW_ALL_PROJECTS)):
+            raise PermissionDenied('You do not have permission to view this.')
+
+        User = get_user_model()
+        projects = list(Project.objects.order_by('code'))
+        active_projects = [p for p in projects if p.status != ProjectStatus.ARCHIVED]
+
+        no_manager_ids = set(
+            Project.objects.exclude(status=ProjectStatus.ARCHIVED)
+            .annotate(has_manager=Exists(UserAccess.objects.filter(
+                project=OuterRef('pk'), scope_type=ScopeType.PROJECT, role__name='MANAGER')))
+            .filter(has_manager=False)
+            .values_list('id', flat=True)
+        )
+        no_access_users = list(
+            User.objects.filter(is_active=True, is_superuser=False)
+            .annotate(has_access=Exists(UserAccess.objects.filter(user=OuterRef('pk'))))
+            .filter(has_access=False)
+            .values_list('id', 'username')
+        )
+
+        attention = [
+            {'type': 'no_manager', 'label': f'{p.name} has no manager assigned', 'target_id': p.id}
+            for p in active_projects if p.id in no_manager_ids
+        ] + [
+            {'type': 'no_access', 'label': f'{username} has no access role', 'target_id': uid}
+            for uid, username in no_access_users
+        ]
+
+        managers_by_project = {}
+        for ua in UserAccess.objects.filter(
+                scope_type=ScopeType.PROJECT, role__name='MANAGER', project__in=projects
+        ).select_related('user__manager_profile'):
+            manager = getattr(ua.user, 'manager_profile', None)
+            managers_by_project.setdefault(ua.project_id, []).append(manager.name if manager else ua.user.get_username())
+
+        return Response({
+            'active_projects': len(active_projects),
+            'total_spent': sum((ledger.total_expense(p) for p in projects), ZERO),
+            'users': User.objects.filter(is_active=True).count(),
+            'attention': attention,
+            'projects': [
+                {
+                    'id': p.id, 'name': p.name, 'status': p.status,
+                    'managers': managers_by_project.get(p.id, []),
+                    'spent': ledger.total_expense(p),
+                }
+                for p in projects
+            ],
+        })
 
 
 # ---------------------------------------------------------------------------
