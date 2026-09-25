@@ -36,8 +36,8 @@ from .models import (
 )
 
 # Categories a manager can spend fund money on that are NOT mirrored into ManagerLabourDistribution.
-# LABOUR is deliberately excluded here: money a manager hands to labour is already counted through
-# active_distributions() below, so including it again would double count the same expense.
+# LABOUR is excluded from this list (see _manager_direct_labour_expenses below, which handles it
+# separately to avoid double-counting rows that *are* mirrored via active_distributions()).
 _MANAGER_DIRECT_CATEGORIES = (ExpenseCategory.MISCELLANEOUS, ExpenseCategory.CONTRACTOR, ExpenseCategory.SUPPLIER)
 
 
@@ -53,6 +53,22 @@ def _manager_direct_expenses(project, manager):
     return ExpenseTransaction.objects.filter(
         project=project, expense_category__in=_MANAGER_DIRECT_CATEGORIES,
         status=TransactionStatus.ACTIVE, created_by=manager.user_id,
+    )
+
+
+def _manager_direct_labour_expenses(project, manager):
+    """Active LABOUR expenses this manager recorded directly via LabourPaymentViewSet (the Add
+    Expense -> Labour screen), as opposed to through ledger.distribute() / ManagerLabourDistribution.
+
+    Both are legitimate ways for a manager to pay labour out of their fund, and both must count
+    towards manager_spent() -- but a distribution's mirrored ExpenseTransaction is already summed via
+    active_distributions() above, so this only picks up LABOUR rows with no linked distribution
+    (manager_labour_distribution__isnull=True) to avoid counting the same payment twice.
+    """
+    return ExpenseTransaction.objects.filter(
+        project=project, expense_category=ExpenseCategory.LABOUR,
+        status=TransactionStatus.ACTIVE, created_by=manager.user_id,
+        manager_labour_distribution__isnull=True,
     )
 
 ZERO = Decimal('0.00')
@@ -72,12 +88,15 @@ def fund_given(project, manager):
 def manager_spent(project, manager):
     """
     manager_spent(P,m): every active ExpenseTransaction on this project paid by this manager out
-    of their fund -- labour distributions plus any other category they're granted (Other, Supplier,
-    Contractor). Never sums ManagerLabourDistribution.amount directly (it already creates the
-    ExpenseTransaction this counts), and never counts ManagerFund itself (it is not an expense).
+    of their fund -- labour distributions (via ManagerLabourDistribution), LABOUR expenses recorded
+    directly (via LabourPaymentViewSet, with no linked distribution), plus any other category
+    they're granted (Other, Supplier, Contractor). Never sums ManagerLabourDistribution.amount
+    directly (it already creates the ExpenseTransaction this counts), and never counts ManagerFund
+    itself (it is not an expense).
     """
     return (
         _sum(active_distributions(ManagerLabourDistribution.objects.filter(project=project, manager=manager)), 'amount')
+        + _sum(_manager_direct_labour_expenses(project, manager), 'amount')
         + _sum(_manager_direct_expenses(project, manager), 'amount')
     )
 
