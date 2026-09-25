@@ -59,6 +59,7 @@ from .permissions import (
     CAN_VIEW_EXPENSES,
     CAN_VIEW_LABOUR,
     CAN_VIEW_PROJECTS,
+    CAN_VIEW_REPORTS,
     CAN_VIEW_SUPPLIERS,
     RoleAllowed,
     can_cancel_distribution,
@@ -291,10 +292,31 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         serializer.validated_data.pop('code', None)
         serializer.save()
 
+    def _report_project(self, pk):
+        """
+        Like get_object(), but for the read-only report actions below (summary/owners_summary/
+        dashboard): reachable with canViewReports alone, not only canViewProjects. canViewProjects
+        gates the Projects list/switcher screen and is deliberately never granted to the MANAGER
+        role (see web/authz.js's NOT_MANAGER), but every role -- including Manager -- gets
+        canViewReports by default, and a Manager must still be able to open Total Expense for
+        their own assigned project even without the Projects switcher.
+        """
+        user = self.request.user
+        if is_admin(user):
+            project = get_object_or_404(Project, pk=pk)
+        else:
+            ids = [
+                p.id for p in services.accessible_projects(user)
+                if services.has_perm(user, CAN_VIEW_PROJECTS, p) or services.has_perm(user, CAN_VIEW_REPORTS, p)
+            ]
+            project = get_object_or_404(Project, pk=pk, id__in=ids)
+        self.check_object_permissions(self.request, project)
+        return project
+
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
         """Total expense + category-wise breakup (ACTIVE transactions only; see core/ledger.py)."""
-        project = self.get_object()
+        project = self._report_project(pk)
         return Response({
             'project': project.code,
             'total_expense': ledger.total_expense(project),
@@ -304,7 +326,7 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
     @action(detail=True, methods=['get'], url_path='owners-summary')
     def owners_summary(self, request, pk=None):
         """Owner-wise contribution breakup (ACTIVE transactions only)."""
-        project = self.get_object()
+        project = self._report_project(pk)
         active = project.expense_transactions.filter(status=TransactionStatus.ACTIVE)
         rows = (
             active.values('paid_by_owner_id', 'paid_by_owner__name')
@@ -337,7 +359,7 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         ExpenseTransaction rows it creates are counted, so there is no
         double counting. All figures come from core/ledger.py.
         """
-        project = self.get_object()
+        project = self._report_project(pk)
         active = project.expense_transactions.filter(status=TransactionStatus.ACTIVE)
 
         total = ledger.total_expense(project)
