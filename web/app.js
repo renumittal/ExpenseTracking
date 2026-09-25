@@ -70,6 +70,14 @@
   // Set once a new service worker has installed alongside a still-running old one (see the
   // registration code near the bottom): shows the reload banner until the user taps it.
   let updateAvailable = false;
+  // Hashes actually visited this session, in order -- lets the topbar Back button return to wherever
+  // the user really came from (e.g. Add Expense reached from a Reports link goes back to Reports),
+  // instead of a screen's hardcoded default. Capped so a long session doesn't grow it unbounded.
+  let navStack = [];
+  function pushNav(hash) {
+    if (navStack[navStack.length - 1] !== hash) navStack.push(hash);
+    if (navStack.length > 30) navStack.shift();
+  }
   // Closes the top-right user menu, if open; set by renderUserbar() on each render and invoked by
   // the one shared document/hashchange listener below (registered once, not per-render).
   let userMenuCloser = null;
@@ -298,8 +306,11 @@
     const top = document.getElementById('topbar');
     top.hidden = !back;
     if (back) {
+      // Prefer where the user actually came from over the screen's hardcoded default, so e.g. Add
+      // Expense reached from a Reports link goes back to Reports, not always to Home.
+      const prev = navStack.length > 1 ? navStack[navStack.length - 2] : null;
       const backBtn = document.getElementById('backBtn');
-      backBtn.setAttribute('href', back);
+      backBtn.setAttribute('href', prev || back);
       backBtn.innerHTML = `← ${L('वापस', 'BACK')}`;
     }
     document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
@@ -2340,6 +2351,7 @@
     }
     const need = Authz.routePermission(page, arg);
     if (need && !canAny(need)) return screenNoAccess();   // typed-in / bookmarked links
+    pushNav(location.hash || '#/home');
     switch (page) {
       case 'add': return screenAdd();
       case 'done': return screenDone();
