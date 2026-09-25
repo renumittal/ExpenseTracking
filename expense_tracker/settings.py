@@ -156,7 +156,11 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+# The business runs in India; "today"/date-range defaults (e.g. the Manager Dashboard's default
+# month, core/views.py transactions()) must use IST wall-clock dates, not UTC ones. All timestamps
+# are still stored in UTC (USE_TZ=True) -- this only changes how timezone.localdate()/localtime()
+# convert them for display and for computing "today".
+TIME_ZONE = 'Asia/Kolkata'
 
 USE_I18N = True
 

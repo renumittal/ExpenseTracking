@@ -64,9 +64,14 @@
     set(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode: ignore */ } },
     del(k) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } },
   };
-  const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  const today = () => iso(new Date());
-  const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); return iso(d); };
+  // The business runs on IST wall-clock dates regardless of the device's own timezone (week/month
+  // boundaries, "today" defaults). IST has no DST, so a fixed +5:30 offset from the UTC instant is
+  // exact; reading it back with getUTC*() (not local getters) avoids the browser re-applying its
+  // own timezone on top.
+  const isoUTC = d => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+  const istNow = () => new Date(Date.now() + 330 * 60000);
+  const today = () => isoUTC(istNow());
+  const yesterday = () => { const d = istNow(); d.setUTCDate(d.getUTCDate() - 1); return isoUTC(d); };
   const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const shortDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${String(d).padStart(2, '0')}-${EN_MONTHS[m - 1]}-${y}` : ''; };
   const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${L(MONTHS_HI[m - 1], MONTHS_EN_FULL[m - 1])} ${y}` : ''; };
@@ -447,13 +452,13 @@
   let mdInTotal = 0, mdOutTotal = 0, mdCount = 0;
 
   function mdWeekRange() {
-    const t = new Date(); const day = t.getDay(); const diff = day === 0 ? 6 : day - 1;
-    const mon = new Date(t); mon.setDate(t.getDate() - diff);
-    return { from: iso(mon), to: today() };
+    const t = istNow(); const day = t.getUTCDay(); const diff = day === 0 ? 6 : day - 1;
+    const mon = new Date(t); mon.setUTCDate(t.getUTCDate() - diff);
+    return { from: isoUTC(mon), to: today() };
   }
   function mdMonthRange() {
-    const t = new Date();
-    return { from: `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-01`, to: today() };
+    const t = istNow();
+    return { from: `${t.getUTCFullYear()}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-01`, to: today() };
   }
   function mdComputeDates() {
     if (mdRange === 'week') return mdWeekRange();

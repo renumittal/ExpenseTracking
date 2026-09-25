@@ -26,6 +26,7 @@ from rest_framework.exceptions import ValidationError
 from .models import (
     ExpenseCategory,
     ExpenseTransaction,
+    Manager,
     ManagerFund,
     ManagerLabourDistribution,
     PartyType,
@@ -34,18 +35,23 @@ from .models import (
     active_distributions,
 )
 
+# Categories a manager can spend fund money on that are NOT mirrored into ManagerLabourDistribution.
+# LABOUR is deliberately excluded here: money a manager hands to labour is already counted through
+# active_distributions() below, so including it again would double count the same expense.
+_MANAGER_DIRECT_CATEGORIES = (ExpenseCategory.MISCELLANEOUS, ExpenseCategory.CONTRACTOR, ExpenseCategory.SUPPLIER)
 
-def _manager_other_expenses(project, manager):
-    """Active MISCELLANEOUS ('Other') expenses this manager personally recorded on this project.
 
-    A manager's "Total Distributed" is not only what they've handed to labour out of a
-    ManagerFund (ManagerLabourDistribution) -- it also includes Other-category expenses they
-    record directly (canAddMiscExpense). Those never touch ManagerLabourDistribution, so a
-    formula that only summed distributions under-counted a manager's real spend. Identified by
-    created_by (the manager's own user), not paid_by_owner (which is always an Owner row).
+def _manager_direct_expenses(project, manager):
+    """Active Other/Supplier/Contractor expenses this manager personally recorded on this project.
+
+    A manager's spend is not only what they've handed to labour out of a ManagerFund
+    (ManagerLabourDistribution) -- it also includes any other category they're granted (Other,
+    Supplier, Contractor) that they record directly. Those never touch ManagerLabourDistribution,
+    so a formula that only summed distributions (or only Other) under-counted a manager's real
+    spend. Identified by created_by (the manager's own user), not paid_by_owner (always an Owner row).
     """
     return ExpenseTransaction.objects.filter(
-        project=project, expense_category=ExpenseCategory.MISCELLANEOUS,
+        project=project, expense_category__in=_MANAGER_DIRECT_CATEGORIES,
         status=TransactionStatus.ACTIVE, created_by=manager.user_id,
     )
 
@@ -56,20 +62,77 @@ def _sum(queryset, field):
     return queryset.aggregate(total=Sum(field))['total'] or ZERO
 
 
-def position(project, manager):
-    """
-    A manager's complete fund position on one project (computed from the database every time).
+def fund_given(project, manager):
+    """fund_given(P,m): all active ManagerFund given to this manager on this project."""
+    return _sum(ManagerFund.objects.filter(project=project, manager=manager), 'fund_amount')
 
-    total_distributed = active labour distributions (money handed to labour out of this
-    manager's fund) + active Other-category expenses this manager recorded themselves. Previously
-    this only counted labour distributions, which under-stated how much of the fund a manager who
-    also records Other expenses had actually spent.
+
+def manager_spent(project, manager):
     """
-    received = _sum(ManagerFund.objects.filter(project=project, manager=manager), 'fund_amount')
-    distributed = (
+    manager_spent(P,m): every active ExpenseTransaction on this project paid by this manager out
+    of their fund -- labour distributions plus any other category they're granted (Other, Supplier,
+    Contractor). Never sums ManagerLabourDistribution.amount directly (it already creates the
+    ExpenseTransaction this counts), and never counts ManagerFund itself (it is not an expense).
+    """
+    return (
         _sum(active_distributions(ManagerLabourDistribution.objects.filter(project=project, manager=manager)), 'amount')
-        + _sum(_manager_other_expenses(project, manager), 'amount')
+        + _sum(_manager_direct_expenses(project, manager), 'amount')
     )
+
+
+def manager_balance(project, manager):
+    """manager_balance(P,m) = fund_given - manager_spent. May be negative (an over-spend)."""
+    return fund_given(project, manager) - manager_spent(project, manager)
+
+
+def project_managers(project):
+    """Every Manager with any fund or recorded expense on this project (the set with_managers/owner_direct sum over)."""
+    fund_manager_ids = ManagerFund.objects.filter(project=project).values_list('manager_id', flat=True)
+    expense_user_ids = ExpenseTransaction.objects.filter(project=project).values_list('created_by_id', flat=True).distinct()
+    manager_ids = set(fund_manager_ids) | set(
+        Manager.objects.filter(user_id__in=expense_user_ids).values_list('id', flat=True)
+    )
+    return Manager.objects.filter(id__in=manager_ids)
+
+
+def category_totals(project):
+    """category_totals(P): active-only ExpenseTransaction totals per category. Always sums to total_expense(P)."""
+    active = project.expense_transactions.filter(status=TransactionStatus.ACTIVE)
+    return {category: _sum(active.filter(expense_category=category), 'amount') for category, _ in ExpenseCategory.choices}
+
+
+def total_expense(project):
+    """total_expense(P) = sum of category_totals(P): the Total Expense screen / reports figure."""
+    return sum(category_totals(project).values(), ZERO)
+
+
+def owner_direct(project):
+    """owner_direct(P): active ExpenseTransaction on this project not paid by a manager (total_expense minus every manager's spend)."""
+    spent_by_managers = sum((manager_spent(project, m) for m in project_managers(project)), ZERO)
+    return total_expense(project) - spent_by_managers
+
+
+def with_managers(project):
+    """with_managers(P) = Σ_m manager_balance(P,m): fund money still sitting with managers (may be negative overall)."""
+    return sum((manager_balance(project, m) for m in project_managers(project)), ZERO)
+
+
+def total_project_spend(project):
+    """total_project_spend(P) (Owner) = total_expense(P) + with_managers(P) = owner_direct(P) + Σ_m fund_given(P,m)."""
+    return total_expense(project) + with_managers(project)
+
+
+def manager_total_balance(manager):
+    """total_balance for a manager across every project they hold a fund on."""
+    project_ids = ManagerFund.objects.filter(manager=manager).values_list('project_id', flat=True).distinct()
+    from .models import Project
+    return sum((manager_balance(p, manager) for p in Project.objects.filter(id__in=project_ids)), ZERO)
+
+
+def position(project, manager):
+    """A manager's complete fund position on one project (computed from the database every time)."""
+    received = fund_given(project, manager)
+    distributed = manager_spent(project, manager)
     return {
         'project_id': project.id,
         'project_code': project.code,

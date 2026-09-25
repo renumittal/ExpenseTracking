@@ -286,18 +286,12 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
 
     @action(detail=True, methods=['get'])
     def summary(self, request, pk=None):
-        """Total expense + category-wise breakup (ACTIVE transactions only)."""
+        """Total expense + category-wise breakup (ACTIVE transactions only; see core/ledger.py)."""
         project = self.get_object()
-        active = project.expense_transactions.filter(status=TransactionStatus.ACTIVE)
-        total = active.aggregate(total=Sum('amount'))['total'] or ZERO
-        category_breakup = {
-            category: active.filter(expense_category=category).aggregate(total=Sum('amount'))['total'] or ZERO
-            for category, _ in ExpenseCategory.choices
-        }
         return Response({
             'project': project.code,
-            'total_expense': total,
-            'category_breakup': category_breakup,
+            'total_expense': ledger.total_expense(project),
+            'category_breakup': ledger.category_totals(project),
         })
 
     @action(detail=True, methods=['get'], url_path='owners-summary')
@@ -334,16 +328,13 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
         categories, and ManagerFund itself is never summed here (see
         ManagerLabourDistribution's docstring in models.py) -- only the
         ExpenseTransaction rows it creates are counted, so there is no
-        double counting.
+        double counting. All figures come from core/ledger.py.
         """
         project = self.get_object()
         active = project.expense_transactions.filter(status=TransactionStatus.ACTIVE)
 
-        total = active.aggregate(total=Sum('amount'))['total'] or ZERO
-        category_breakup = {
-            category: active.filter(expense_category=category).aggregate(total=Sum('amount'))['total'] or ZERO
-            for category, _ in ExpenseCategory.choices
-        }
+        total = ledger.total_expense(project)
+        category_breakup = ledger.category_totals(project)
 
         owner_rows = (
             active.values('paid_by_owner_id', 'paid_by_owner__name')
@@ -380,6 +371,13 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
             for fund in project.manager_funds.select_related('manager')
         ]
 
+        # Owner cards (requirement doc formulas): Given, Spent by Managers, With Managers, and the
+        # owner's whole-project total (owner_direct + fund given to every manager).
+        managers = ledger.project_managers(project)
+        fund_given_total = sum((ledger.fund_given(project, m) for m in managers), ZERO)
+        spent_by_managers_total = sum((ledger.manager_spent(project, m) for m in managers), ZERO)
+        with_managers_total = fund_given_total - spent_by_managers_total
+
         return Response({
             'project': project.code,
             'total_expense': total,
@@ -387,6 +385,11 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
             'owner_contribution': owner_contribution,
             'contractor_positions': contractor_positions,
             'manager_fund_summary': manager_fund_summary,
+            'owner_direct': total - spent_by_managers_total,
+            'fund_given_total': fund_given_total,
+            'spent_by_managers_total': spent_by_managers_total,
+            'with_managers': with_managers_total,
+            'total_project_spend': total + with_managers_total,
         })
 
     def _project_or_404(self, pk):
