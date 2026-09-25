@@ -599,6 +599,8 @@ class ManagerFund(models.Model):
         indexes = [
             models.Index(fields=['project']),
             models.Index(fields=['fund_date']),
+            # Backs the manager-summary/transactions date-range queries (project + date together).
+            models.Index(fields=['project', 'fund_date']),
         ]
         constraints = [
             models.CheckConstraint(check=models.Q(fund_amount__gt=0), name='managerfund_amount_positive'),

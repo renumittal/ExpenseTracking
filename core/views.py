@@ -85,6 +85,47 @@ from .serializers import (
 )
 
 
+# Which "Add Expense" permission gates each expense category -- shared by create (perform_create
+# below) and by the manager-summary/transactions/Add-Expense-tab endpoints, which are all about
+# "may this manager ADD/use this category", not just look at it (see web/authz.js ADD_PERMISSION,
+# canAddCategory -- this is its server-side mirror).
+CATEGORY_PERMISSION = {
+    ExpenseCategory.LABOUR: CAN_RECORD_LABOUR_PAYMENT,
+    ExpenseCategory.SUPPLIER: CAN_ADD_SUPPLIER_EXPENSE,
+    ExpenseCategory.CONTRACTOR: CAN_ADD_CONTRACTOR_EXPENSE,
+    ExpenseCategory.MISCELLANEOUS: CAN_ADD_MISC_EXPENSE,
+}
+
+# Which "View" permission gates a category appearing in the expense LIST/history at all -- deliberately
+# a different (broader) set than CATEGORY_PERMISSION above: someone who may only ever VIEW suppliers
+# (canViewSuppliers, no canAddSupplierExpense) must still see supplier rows in the list/history, exactly
+# like web/authz.js's REPORT_PERMISSION/viewableCats() already does for the Expense List and Reports
+# screens. Used for list/retrieve filtering (ExpenseTransactionViewSet.get_queryset); CATEGORY_PERMISSION
+# above stays the one used for create and for the Manager Dashboard's Add-Expense-tab gating.
+CATEGORY_VIEW_PERMISSION = {
+    ExpenseCategory.LABOUR: CAN_VIEW_LABOUR,
+    ExpenseCategory.SUPPLIER: CAN_VIEW_SUPPLIERS,
+    ExpenseCategory.CONTRACTOR: CAN_VIEW_CONTRACTORS,
+    ExpenseCategory.MISCELLANEOUS: CAN_VIEW_EXPENSES,
+}
+
+
+def _allowed_categories(user, project):
+    """Expense categories `user` may ADD on `project` (server-authoritative; mirrors web/authz.js
+    canAddCategory) -- used for create, and for what the Manager Dashboard offers as an Add-Expense tab."""
+    if is_admin(user):
+        return list(CATEGORY_PERMISSION.keys())
+    return [cat for cat, perm in CATEGORY_PERMISSION.items() if services.has_perm(user, perm, project)]
+
+
+def _viewable_categories(user, project):
+    """Expense categories `user` may VIEW on `project` (mirrors web/authz.js viewableCats) -- used to
+    filter the expense list/history so a view-only category isn't hidden just because add isn't granted."""
+    if is_admin(user):
+        return list(CATEGORY_VIEW_PERMISSION.keys())
+    return [cat for cat, perm in CATEGORY_VIEW_PERMISSION.items() if services.has_perm(user, perm, project)]
+
+
 def _unique_project_code(name):
     """A short, unique code derived from `name` (e.g. 'Green Valley Phase 2' -> 'GREENVALL'), for a
     create that left `code` blank. Falls back to 'PROJ' if the name has no letters/digits, then
@@ -348,6 +389,126 @@ class ProjectViewSet(mixins.CreateModelMixin, mixins.UpdateModelMixin, viewsets.
             'manager_fund_summary': manager_fund_summary,
         })
 
+    def _project_or_404(self, pk):
+        try:
+            return Project.objects.get(pk=pk)
+        except Project.DoesNotExist:
+            raise NotFound('Project not found.')
+
+    def _require_project_access(self, user, project):
+        """403 (not 404) if `user` has no access at all to `project` -- this.get_queryset() already
+        scopes the normal list/retrieve, but manager-summary/transactions look the project up
+        directly (see _project_or_404) so a project the user cannot see 403s instead of 404ing."""
+        if not (is_admin(user) or services.has_perm(user, CAN_VIEW_EXPENSES, project)):
+            raise PermissionDenied('You do not have access to this project.')
+
+    @action(detail=True, methods=['get'], url_path='manager-summary')
+    def manager_summary(self, request, pk=None):
+        """
+        Manager Dashboard summary card data for the requesting user on this project:
+        fund received / total distributed (see ledger.position -- labour distributions + Other
+        expenses they recorded) / balance, plus a per-category total of what THEY recorded, limited
+        to the categories they are actually permitted to add/view (server-authoritative).
+        """
+        project = self._project_or_404(pk)
+        user = request.user
+        self._require_project_access(user, project)
+
+        allowed = _allowed_categories(user, project)
+        manager = getattr(user, 'manager_profile', None)
+        if manager is not None:
+            pos = ledger.position(project, manager)
+            fund_received = pos['total_received']
+            total_distributed = pos['total_distributed']
+            balance = pos['available_balance']
+        else:
+            fund_received = total_distributed = balance = ZERO
+
+        category_totals = {}
+        for cat in allowed:
+            total = ExpenseTransaction.objects.filter(
+                project=project, expense_category=cat, status=TransactionStatus.ACTIVE, created_by=user,
+            ).aggregate(t=Sum('amount'))['t'] or ZERO
+            category_totals[cat.lower()] = total
+
+        return Response({
+            'fund_received': fund_received,
+            'total_distributed': total_distributed,
+            'balance': balance,
+            'category_totals': category_totals,
+            'allowed_categories': [c.lower() for c in allowed],
+        })
+
+    @action(detail=True, methods=['get'], url_path='transactions')
+    def transactions(self, request, pk=None):
+        """
+        GET .../transactions/?from=YYYY-MM-DD&to=YYYY-MM-DD&page=1
+        -> {in_total, out_total, count, results, next}
+
+        "In" = ManagerFund the requesting user received on this project (fund received from an
+        owner); "Out" = ACTIVE ExpenseTransaction rows the requesting user recorded, limited to
+        categories they're permitted for. Default range (no from/to) = the current calendar month.
+        Paginated 20/page across the combined, date-desc sorted list.
+        """
+        project = self._project_or_404(pk)
+        user = request.user
+        self._require_project_access(user, project)
+
+        today = timezone.localdate()
+        date_from = request.query_params.get('from') or today.replace(day=1).isoformat()
+        date_to = request.query_params.get('to') or today.isoformat()
+
+        allowed = _allowed_categories(user, project)
+        manager = getattr(user, 'manager_profile', None)
+
+        in_qs = ManagerFund.objects.none()
+        if manager is not None:
+            in_qs = ManagerFund.objects.filter(
+                project=project, manager=manager, fund_date__gte=date_from, fund_date__lte=date_to,
+            )
+        out_qs = ExpenseTransaction.objects.filter(
+            project=project, created_by=user, status=TransactionStatus.ACTIVE,
+            expense_category__in=allowed, expense_date__gte=date_from, expense_date__lte=date_to,
+        )
+
+        in_total = in_qs.aggregate(t=Sum('fund_amount'))['t'] or ZERO
+        out_total = out_qs.aggregate(t=Sum('amount'))['t'] or ZERO
+
+        rows = [
+            {
+                'id': f'fund-{f.id}', 'type': 'IN', 'category': 'FUND', 'date': f.fund_date,
+                'amount': f.fund_amount, 'payment_mode': f.payment_mode,
+                'description': f'Fund received from {f.given_by_owner.name}',
+            }
+            for f in in_qs.select_related('given_by_owner')
+        ] + [
+            {
+                'id': f'expense-{e.id}', 'type': 'OUT', 'category': e.expense_category.lower(), 'date': e.expense_date,
+                'amount': e.amount, 'payment_mode': e.payment_mode,
+                'description': e.description or e.expense_type,
+            }
+            for e in out_qs
+        ]
+        rows.sort(key=lambda r: (r['date'], r['id']), reverse=True)
+
+        count = len(rows)
+        try:
+            page = max(1, int(request.query_params.get('page') or 1))
+        except (TypeError, ValueError):
+            page = 1
+        page_size = 20
+        start = (page - 1) * page_size
+        page_rows = rows[start:start + page_size]
+        has_next = start + page_size < count
+
+        return Response({
+            'in_total': in_total,
+            'out_total': out_total,
+            'count': count,
+            'results': page_rows,
+            'next': page + 1 if has_next else None,
+        })
+
 
 class ExpenseTransactionViewSet(viewsets.ModelViewSet):
     """
@@ -395,6 +556,9 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
             ]
             qs = ExpenseTransaction.objects.filter(project_id__in=viewable)
 
+        if not is_admin(user):
+            qs = self._filter_categories_by_permission(qs, user)
+
         params = self.request.query_params
         if params.get('project'):
             qs = qs.filter(project_id=params['project'])
@@ -416,20 +580,29 @@ class ExpenseTransactionViewSet(viewsets.ModelViewSet):
             qs = qs.filter(supplier_id=params['supplier'])
         return qs
 
-    # Which "Add Expense" permission gates creating each category, so each resource (labour,
-    # supplier, contractor, misc) can be turned on/off independently on the Role & Permissions screen.
-    ADD_PERMISSION_BY_CATEGORY = {
-        ExpenseCategory.LABOUR: CAN_RECORD_LABOUR_PAYMENT,
-        ExpenseCategory.SUPPLIER: CAN_ADD_SUPPLIER_EXPENSE,
-        ExpenseCategory.CONTRACTOR: CAN_ADD_CONTRACTOR_EXPENSE,
-        ExpenseCategory.MISCELLANEOUS: CAN_ADD_MISC_EXPENSE,
-    }
+    def _filter_categories_by_permission(self, qs, user):
+        """
+        Category-level enforcement for list/retrieve: canViewExpenses on a project is not enough --
+        a manager who e.g. only has canRecordLabourPayment must not see SUPPLIER/CONTRACTOR/MISC
+        rows even for a project they can otherwise view. Applied per-project since permissions are
+        project-scoped (an override may grant a category on one project but not another).
+        """
+        project_ids = set(qs.values_list('project_id', flat=True).distinct())
+        if not project_ids:
+            return qs
+        projects = {p.id: p for p in Project.objects.filter(id__in=project_ids)}
+        allowed_q = Q(pk__in=[])
+        for project_id, project in projects.items():
+            allowed = _viewable_categories(user, project)
+            if allowed:
+                allowed_q |= Q(project_id=project_id, expense_category__in=allowed)
+        return qs.filter(allowed_q)
 
     def perform_create(self, serializer):
         user = self.request.user
         project = serializer.validated_data['project']
         category = serializer.validated_data['expense_category']
-        permission = self.ADD_PERMISSION_BY_CATEGORY[category]
+        permission = CATEGORY_PERMISSION[category]
         if not services.has_perm(user, permission, project):
             raise PermissionDenied('You are not authorized to add this type of expense on this project.')
         serializer.save(created_by=user)

@@ -18,6 +18,11 @@
     { key: 'MISCELLANEOUS', icon: '📦', hi: 'दूसरा खर्च', en: 'Other',      type: 'Other',              party: 'NONE' },
   ];
   const CAT = Object.fromEntries(CATS.map(c => [c.key, c]));
+  // Add Expense tab query param (#/add?tab=labour|other|supplier|contractor) <-> expense category.
+  // "other" (not "miscellaneous") is the tab name because that's what the category is called
+  // everywhere else user-facing (see CATS' MISCELLANEOUS label above).
+  const TAB_TO_CAT = { labour: 'LABOUR', other: 'MISCELLANEOUS', supplier: 'SUPPLIER', contractor: 'CONTRACTOR' };
+  const CAT_TO_TAB = { LABOUR: 'labour', MISCELLANEOUS: 'other', SUPPLIER: 'supplier', CONTRACTOR: 'contractor' };
   const catLabel = c => L(c.hi, c.en);
   const MODES = [
     { key: 'CASH', hi: 'नकद', en: 'Cash' },
@@ -306,11 +311,18 @@
     const nav = document.getElementById('tabs');
     const items = loggedIn && state.user ? Authz.navFor(can) : [];
     const more = items.filter(n => !n.primary);
-    nav.innerHTML = items.filter(n => n.primary).map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('')
+    // Add Expense opens the first category tab this user is actually permitted to enter, so they
+    // never land on step 1's picker with nothing pre-selected when only one category applies to them.
+    const navHash = n => {
+      if (n.id !== 'add') return n.hash;
+      const first = allowedCats()[0];
+      return first ? `#/add?tab=${CAT_TO_TAB[first.key]}` : n.hash;
+    };
+    nav.innerHTML = items.filter(n => n.primary).map(n => `<a href="${navHash(n)}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('')
       + (more.length ? `<button type="button" id="menuBtn" data-tab="menu" aria-expanded="false"><span>☰</span>${I18n.t('menu')}</button>` : '');
     const sheet = document.getElementById('menuSheet');
     sheet.hidden = true;
-    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('');
+    sheet.innerHTML = more.map(n => `<a href="${navHash(n)}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('');
     const menuBtn = document.getElementById('menuBtn');
     if (menuBtn) {
       menuBtn.onclick = () => { sheet.hidden = !sheet.hidden; menuBtn.setAttribute('aria-expanded', String(!sheet.hidden)); };
@@ -428,9 +440,106 @@
     location.reload();
   }
 
-  function screenHome() {
+  // Manager Dashboard: the default landing screen for a manager with a project selected (see
+  // screenHome below). Owner/admin/viewer keep the plain quick-links home screen.
+  const DASH_CATS = ['LABOUR', 'MISCELLANEOUS', 'SUPPLIER', 'CONTRACTOR'];
+  let mdRange = 'month', mdFrom = '', mdTo = '', mdPage = 1, mdResults = [], mdHasNext = false;
+  let mdInTotal = 0, mdOutTotal = 0, mdCount = 0;
+
+  function mdWeekRange() {
+    const t = new Date(); const day = t.getDay(); const diff = day === 0 ? 6 : day - 1;
+    const mon = new Date(t); mon.setDate(t.getDate() - diff);
+    return { from: iso(mon), to: today() };
+  }
+  function mdMonthRange() {
+    const t = new Date();
+    return { from: `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-01`, to: today() };
+  }
+  function mdComputeDates() {
+    if (mdRange === 'week') return mdWeekRange();
+    if (mdRange === 'custom') { const m = mdMonthRange(); return { from: mdFrom || m.from, to: mdTo || m.to }; }
+    return mdMonthRange();
+  }
+
+  async function screenManagerDashboard() {
+    chrome('home');
+    const project = state.project;
+    loading();
+    let summary;
+    try { summary = await api(`projects/${project.id}/manager-summary/`); }
+    catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
+
+    const cards = DASH_CATS.map(k => CAT[k]).filter(c => (summary.allowed_categories || []).includes(c.key.toLowerCase()));
+
+    async function loadTxns(reset) {
+      if (reset) { mdPage = 1; mdResults = []; }
+      const { from, to } = mdComputeDates();
+      const r = await api(`projects/${project.id}/transactions/?from=${from}&to=${to}&page=${mdPage}`);
+      mdInTotal = r.in_total; mdOutTotal = r.out_total; mdCount = r.count;
+      mdResults = reset ? r.results : mdResults.concat(r.results);
+      mdHasNext = !!r.next;
+    }
+
+    try { await loadTxns(true); } catch (e) { mdResults = []; mdHasNext = false; mdInTotal = mdOutTotal = mdCount = 0; }
+
+    function render() {
+      const { from, to } = mdComputeDates();
+      const bal = Number(summary.balance);
+      $view.innerHTML = `
+        <h1>👤 ${I18n.t('managerDashboard')}: ${esc(state.user.name)}</h1>
+        <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(project.name)}</b></p>
+        <div class="tot-grid">
+          <div class="card tot-box"><div class="muted">${I18n.t('fundReceivedTitle')}</div><div class="big-total">${money(summary.fund_received)}</div></div>
+          <div class="card tot-box"><div class="muted">${I18n.t('totalDistributedTitle')}</div><div class="big-total">${money(summary.total_distributed)}</div></div>
+          <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">${I18n.t('availableBalanceTitle')}</div><div class="big-total">${money(summary.balance)}</div></div>
+        </div>
+        ${cards.length ? `<h2>${L('श्रेणी अनुसार', 'By Category')}</h2>` + cards.map(c => `
+          <a class="card item" href="#/add?tab=${CAT_TO_TAB[c.key]}">
+            <div class="row"><span class="who">${c.icon} ${catLabel(c)}</span><span class="amount">${money((summary.category_totals || {})[c.key.toLowerCase()])}</span></div>
+          </a>`).join('') : ''}
+        <h2>🧾 ${L('लेन-देन', 'Transactions')}</h2>
+        <div class="choices small" id="md-chips">
+          <button type="button" class="choice" data-r="week" aria-pressed="${mdRange === 'week'}">${I18n.t('thisWeek')}</button>
+          <button type="button" class="choice" data-r="month" aria-pressed="${mdRange === 'month'}">${I18n.t('thisMonth')}</button>
+          <button type="button" class="choice" data-r="custom" aria-pressed="${mdRange === 'custom'}">${I18n.t('customRange')}</button>
+        </div>
+        ${mdRange === 'custom' ? `<div class="step" id="md-custom">
+          <label for="md-from">${I18n.t('fromDate')}</label><input id="md-from" type="date" value="${mdFrom || from}">
+          <label for="md-to">${I18n.t('toDate')}</label><input id="md-to" type="date" value="${mdTo || to}">
+        </div>` : ''}
+        <div class="fund-table" role="table">
+          <div class="fund-row head" role="row"><span>${I18n.t('inTotal')}</span><span>${I18n.t('outTotal')}</span><span>${I18n.t('txnCount')}</span></div>
+          <div class="fund-row"><span>${money(mdInTotal)}</span><span>${money(mdOutTotal)}</span><span>${mdCount}</span></div>
+        </div>
+        ${mdResults.length ? mdResults.map(row => `
+          <div class="card item"><div class="row">
+            <span class="who">${row.type === 'IN' ? '📥' : '📤'} ${esc(row.description || row.category)}</span>
+            <span class="amount ${row.type === 'IN' ? 'in' : 'out'}">${row.type === 'IN' ? '+' : '−'} ${money(row.amount)}</span>
+          </div><div class="meta">${shortDate(row.date)} · ${esc(modeName(row.payment_mode))}</div></div>`).join('')
+          : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`}
+        ${mdHasNext ? `<button type="button" class="btn line" id="md-more">${I18n.t('loadMore')}</button>` : ''}`;
+
+      document.getElementById('md-chips').querySelectorAll('button').forEach(b => b.onclick = async () => {
+        mdRange = b.dataset.r;
+        if (mdRange !== 'custom') { loading(); await loadTxns(true); render(); } else render();
+      });
+      const fromEl = document.getElementById('md-from'), toEl = document.getElementById('md-to');
+      if (fromEl && toEl) {
+        const applyCustom = async () => { mdFrom = fromEl.value; mdTo = toEl.value; loading(); await loadTxns(true); render(); };
+        fromEl.onchange = applyCustom; toEl.onchange = applyCustom;
+      }
+      const more = document.getElementById('md-more');
+      if (more) more.onclick = async () => { mdPage += 1; more.disabled = true; more.textContent = '…'; await loadTxns(false); render(); };
+    }
+    render();
+  }
+
+  async function screenHome() {
     chrome('home');
     const proj = state.project;
+    // Manager Dashboard is the default landing screen once a manager has a project selected;
+    // everyone else (owner/admin/viewer) keeps the plain quick-links screen below.
+    if (proj && state.me.manager_id) { await screenManagerDashboard(); return; }
     $view.innerHTML = `
       <h1>${L('नमस्ते', 'Hello')}, ${esc(state.user.name)} 🙏</h1>
       ${proj ? `<p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(proj.name)}</b></p>` : noProject()}
@@ -492,7 +601,11 @@
   }
 
   // ----- Add expense -----
-  async function screenAdd() {
+  // `params` (URLSearchParams from the route) may carry ?tab=labour|other|supplier|contractor --
+  // the Manager Dashboard's category cards and the bottom nav's Add Expense item link here to
+  // pre-select a category. A missing or unpermitted tab just leaves the normal category picker
+  // (step 1) untouched, so nothing breaks for a plain #/add visit.
+  async function screenAdd(params) {
     chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
     if (!allowedCats().length) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
@@ -995,7 +1108,7 @@
       let html = '';
       $('s-amt').hidden = cat === 'LABOUR';   // labour has one amount per person instead
       if (cat !== 'LABOUR') labGen++;         // stop any labour load still in flight
-      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = ''; drawLabour(); return; }
+      if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = ''; drawLabour(); drawHistory(); return; }
       if (!cat) {
         html = `<div class="q"><span class="num">3</span>${L('किसको दिया?', 'Name')}</div><p class="muted">${L('पहले ऊपर बताइए कि किस चीज़ का खर्च है.', 'First choose above what this expense is for.')}</p>`;
       } else if (cat === 'CONTRACTOR') {
@@ -1030,6 +1143,46 @@
       document.querySelectorAll('[data-contract]').forEach(b => b.onclick = () => selectContract(b.dataset.contract));
       if ($('what')) $('what').oninput = e => { f.what = e.target.value; };
       if ($('name')) $('name').oninput = e => { f.name = e.target.value; setErr('e-who', ''); drawSuggest(); };
+      drawHistory();
+    }
+
+    // ----- History (Labour / Other only): date-grouped list of this project's entries for the
+    // currently selected category, reusing the .card/.item/.row/.amount list styling used
+    // elsewhere (see screenFund). Collapsed by default; loaded on demand, and reloaded fresh every
+    // time this screen is (re)opened -- including right after a save, since saving routes to
+    // #/done and coming back to Add Expense remounts this screen from scratch.
+    let historyOpen = false;
+    const historyCache = {};
+    async function loadHistory() {
+      const body = document.getElementById('hist-body');
+      if (!body) return;
+      body.innerHTML = `<div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div>`;
+      try {
+        const key = `${state.project.id}:${f.cat}`;
+        if (!historyCache[key]) {
+          historyCache[key] = await api(`expense-transactions/?project=${state.project.id}&category=${f.cat}&status=ACTIVE`);
+        }
+        const rows = historyCache[key];
+        const labourName = id => (names.labour.find(x => x.id === id) || {}).name || '';
+        const byDate = {};
+        rows.forEach(r => { (byDate[r.expense_date] = byDate[r.expense_date] || []).push(r); });
+        const dates = Object.keys(byDate).sort().reverse();
+        body.innerHTML = dates.length ? dates.map(d => {
+          const list = byDate[d];
+          const total = list.reduce((s, r) => s + Number(r.amount), 0);
+          return `<div class="card item"><div class="row"><span class="who">${niceDate(d)}</span><span class="amount">${money(total)}</span></div>` +
+            list.map(r => `<div class="meta">${esc(r.expense_category === 'LABOUR' ? labourName(r.labour) : (r.payee_name || r.expense_type))} · ${money(r.amount)} · ${esc(modeName(r.payment_mode))}</div>`).join('') +
+            `</div>`;
+        }).join('') : `<div class="empty">${I18n.t('noTransactionsYet')}</div>`;
+      } catch (e) { body.innerHTML = errBox(friendly(e)); }
+    }
+    function drawHistory() {
+      const box = $('bottom');
+      if (!box) return;
+      if (f.cat !== 'LABOUR' && f.cat !== 'MISCELLANEOUS') { box.innerHTML = ''; return; }
+      box.innerHTML = `<button type="button" class="btn line" id="hist-toggle">🕘 ${I18n.t('history')} ${historyOpen ? '▲' : '▼'}</button><div id="hist-body"></div>`;
+      $('hist-toggle').onclick = () => { historyOpen = !historyOpen; drawHistory(); if (historyOpen) loadHistory(); };
+      if (historyOpen) loadHistory();
     }
 
     function knownNames() {
@@ -1050,6 +1203,13 @@
       setErr('e-cat', '');
       drawWho();
     });
+    // #/add?tab=labour|other|supplier|contractor: pre-select that category's button (falls back to
+    // no pre-selection -- the normal step-1 picker -- when the tab is missing or not permitted).
+    const wantCat = TAB_TO_CAT[((params && params.get('tab')) || '').toLowerCase()];
+    if (wantCat && allowedCats().some(c => c.key === wantCat)) {
+      const tabBtn = document.querySelector(`[data-cat="${wantCat}"]`);
+      if (tabBtn) tabBtn.click();
+    }
     document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => {
       f.mode = b.dataset.mode;
       document.querySelectorAll('[data-mode]').forEach(x => x.setAttribute('aria-pressed', x === b));
@@ -2404,7 +2564,7 @@
     const need = Authz.routePermission(page, arg);
     if (need && !canAny(need)) return screenNoAccess();   // typed-in / bookmarked links
     switch (page) {
-      case 'add': return screenAdd();
+      case 'add': return screenAdd(params);
       case 'done': return screenDone();
       case 'list': return screenList(params);
       case 'reports': return screenReports();

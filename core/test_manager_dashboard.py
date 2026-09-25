@@ -1,0 +1,232 @@
+"""
+Manager Dashboard backend: GET /api/projects/<id>/manager-summary/ and
+GET /api/projects/<id>/transactions/, plus the ledger fix that makes "total distributed" include
+Other-category expenses (not just labour distributions), and category-permission enforcement on the
+existing expense create/list endpoints. Reuses the LedgerBase fixture from test_manager_fund.py.
+"""
+from decimal import Decimal
+
+from rest_framework import status
+
+from . import ledger
+from .models import (
+    ExpenseCategory,
+    ExpenseTransaction,
+    PartyType,
+    PaymentMode,
+    Role,
+    RolePermission,
+    TransactionStatus,
+)
+from .test_manager_fund import LedgerBase, make_person
+
+D = Decimal
+
+
+class ManagerSummaryFormulaTests(LedgerBase):
+    """The bug: total_distributed only counted labour distributions, ignoring Other expenses."""
+
+    def setUp(self):
+        super().setUp()
+        self.give('100000.00', '2026-09-01')
+        self.batch([(self.labours[0], D('20000'))], date='2026-09-02')
+
+    def add_other_expense(self, amount, user=None, date='2026-09-03'):
+        self.auth_as(user or self.manager_user)
+        return self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': date, 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Tea stall',
+            'paid_by_owner': self.owner.id, 'amount': str(amount), 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+
+    def test_ledger_position_includes_other_expenses_by_the_manager(self):
+        pos_before = ledger.position(self.project, self.manager)
+        self.assertEqual(pos_before['total_distributed'], D('20000.00'))
+
+        r = self.add_other_expense('1500.00')
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+
+        pos_after = ledger.position(self.project, self.manager)
+        self.assertEqual(pos_after['total_distributed'], D('21500.00'))
+        self.assertEqual(pos_after['total_received'], D('100000.00'))
+        self.assertEqual(pos_after['available_balance'], D('78500.00'))
+
+    def test_other_expense_by_a_different_manager_does_not_count(self):
+        self.give('5000.00', '2026-09-01', manager=self.manager2)
+        self.add_other_expense('900.00', user=self.manager2_user)
+        pos = ledger.position(self.project, self.manager)
+        self.assertEqual(pos['total_distributed'], D('20000.00'))  # unaffected by manager2's Other expense
+
+    def test_cancelled_other_expense_does_not_count(self):
+        r = self.add_other_expense('1500.00')
+        tx_id = r.data['id']
+        self.auth_as(self.owner_user)
+        cancel = self.client.post(f'/api/expense-transactions/{tx_id}/cancel/', {'remarks': 'mistake'}, format='json')
+        self.assertEqual(cancel.status_code, 200, cancel.data)
+        self.assertEqual(ledger.position(self.project, self.manager)['total_distributed'], D('20000.00'))
+
+
+class ManagerSummaryEndpointTests(LedgerBase):
+    def setUp(self):
+        super().setUp()
+        self.give('50000.00', '2026-09-01')
+        self.batch([(self.labours[0], D('10000'))], date='2026-09-02')
+
+    def summary(self, user):
+        self.auth_as(user)
+        return self.client.get(f'/api/projects/{self.project.id}/manager-summary/')
+
+    def test_manager_sees_fund_received_distributed_and_balance(self):
+        r = self.summary(self.manager_user)
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['fund_received']), D('50000.00'))
+        self.assertEqual(D(r.data['total_distributed']), D('10000.00'))
+        self.assertEqual(D(r.data['balance']), D('40000.00'))
+
+    def test_allowed_categories_and_category_totals_reflect_useraccess(self):
+        r = self.summary(self.manager_user)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(
+            set(r.data['allowed_categories']), {'labour', 'contractor', 'supplier', 'miscellaneous'},
+        )
+        self.assertIn('labour', r.data['category_totals'])
+        self.assertIn('supplier', r.data['category_totals'])
+
+        # Turn off supplier for MANAGER role-wide: it must disappear from both lists.
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canAddSupplierExpense', defaults={'allowed': False})
+        r2 = self.summary(self.manager_user)
+        self.assertEqual(r2.status_code, 200)
+        self.assertNotIn('supplier', r2.data['allowed_categories'])
+        self.assertNotIn('supplier', r2.data['category_totals'])
+        # Untouched categories remain.
+        self.assertIn('labour', r2.data['allowed_categories'])
+
+    def test_category_total_counts_only_this_managers_own_entries(self):
+        self.auth_as(self.manager2_user)
+        self.give('5000.00', '2026-09-01', manager=self.manager2)
+        r2 = self.summary(self.manager2_user)
+        self.assertEqual(D(r2.data['category_totals'].get('labour', '0')), D('0.00'))
+
+    def test_403_when_user_has_no_access_to_the_project(self):
+        r = self.summary(self.owner_b_user)   # owner of a different project entirely
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_404_for_a_project_that_does_not_exist(self):
+        self.auth_as(self.manager_user)
+        r = self.client.get('/api/projects/999999/manager-summary/')
+        self.assertEqual(r.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_admin_can_view_any_project_summary(self):
+        r = self.summary(self.admin_user)
+        self.assertEqual(r.status_code, 200)
+
+
+class TransactionsEndpointTests(LedgerBase):
+    def setUp(self):
+        super().setUp()
+        self.give('20000.00', '2026-09-05')
+
+    def transactions(self, user, **params):
+        self.auth_as(user)
+        qs = '&'.join(f'{k}={v}' for k, v in params.items())
+        return self.client.get(f'/api/projects/{self.project.id}/transactions/' + (f'?{qs}' if qs else ''))
+
+    def test_default_range_is_current_month(self):
+        # Everything in setUp/tests here is dated in September 2026; freeze "today" isn't available
+        # without extra plumbing, so this test only checks the endpoint responds with a coherent shape.
+        r = self.transactions(self.manager_user)
+        self.assertEqual(r.status_code, 200, r.data)
+        for key in ('in_total', 'out_total', 'count', 'results', 'next'):
+            self.assertIn(key, r.data)
+
+    def test_explicit_date_range_filters_in_and_out(self):
+        self.batch([(self.labours[0], D('3000'))], date='2026-09-10')
+        r = self.transactions(self.manager_user, **{'from': '2026-09-01', 'to': '2026-09-30'})
+        self.assertEqual(r.status_code, 200, r.data)
+        self.assertEqual(D(r.data['in_total']), D('20000.00'))
+        self.assertEqual(D(r.data['out_total']), D('3000.00'))
+        self.assertEqual(r.data['count'], 2)
+
+        r2 = self.transactions(self.manager_user, **{'from': '2026-08-01', 'to': '2026-08-31'})
+        self.assertEqual(r2.data['count'], 0)
+        self.assertEqual(D(r2.data['in_total']), D('0.00'))
+
+    def test_pagination_20_per_page_and_next(self):
+        for i in range(25):
+            self.batch([(self.labours[i % len(self.labours)], D('100'))], date=f'2026-09-{(i % 27) + 1:02d}')
+        r1 = self.transactions(self.manager_user, **{'from': '2026-09-01', 'to': '2026-09-30', 'page': 1})
+        self.assertEqual(len(r1.data['results']), 20)
+        self.assertEqual(r1.data['next'], 2)
+
+        r2 = self.transactions(self.manager_user, **{'from': '2026-09-01', 'to': '2026-09-30', 'page': 2})
+        self.assertGreaterEqual(len(r2.data['results']), 1)
+        self.assertIsNone(r2.data['next'])
+
+    def test_403_when_no_project_access(self):
+        r = self.transactions(self.owner_b_user)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_only_permitted_categories_appear_in_out_transactions(self):
+        self.auth_as(self.manager_user)
+        self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-12', 'expense_category': ExpenseCategory.MISCELLANEOUS,
+            'expense_type': 'Site expense', 'party_type': PartyType.NONE, 'payee_name': 'Tea stall',
+            'paid_by_owner': self.owner.id, 'amount': '250.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canAddMiscExpense', defaults={'allowed': False})
+        r = self.transactions(self.manager_user, **{'from': '2026-09-01', 'to': '2026-09-30'})
+        categories = {row['category'] for row in r.data['results'] if row['type'] == 'OUT'}
+        self.assertNotIn('miscellaneous', categories)
+
+
+class CategoryPermissionEnforcementTests(LedgerBase):
+    """Category permission enforcement on the EXISTING expense create/list endpoints."""
+
+    def create_supplier_expense(self, user):
+        self.auth_as(user)
+        from .models import Supplier
+        supplier = Supplier.objects.create(name='Steel Co')
+        return self.client.post('/api/expense-transactions/', {
+            'project': self.project.id, 'expense_date': '2026-09-10', 'expense_category': ExpenseCategory.SUPPLIER,
+            'expense_type': 'Material', 'party_type': PartyType.SUPPLIER, 'supplier': supplier.id,
+            'paid_by_owner': self.owner.id, 'amount': '5000.00', 'payment_mode': PaymentMode.CASH,
+        }, format='json')
+
+    def test_create_rejected_when_manager_lacks_category_permission(self):
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canAddSupplierExpense', defaults={'allowed': False})
+        r = self.create_supplier_expense(self.manager_user)
+        self.assertEqual(r.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(ExpenseTransaction.objects.filter(expense_category=ExpenseCategory.SUPPLIER).count(), 0)
+
+    def test_create_allowed_when_manager_has_category_permission(self):
+        r = self.create_supplier_expense(self.manager_user)
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+
+    def test_list_hides_unpermitted_category_rows(self):
+        r = self.create_supplier_expense(self.manager_user)
+        self.assertEqual(r.status_code, status.HTTP_201_CREATED, r.data)
+        tx_id = r.data['id']
+
+        # Still visible while permitted.
+        self.auth_as(self.manager_user)
+        ids = {row['id'] for row in self.client.get(f'/api/expense-transactions/?project={self.project.id}').data}
+        self.assertIn(tx_id, ids)
+
+        # canAddSupplierExpense (create-only) being off must NOT hide it -- list visibility follows
+        # the VIEW permission (canViewSuppliers), same as the existing Expense List/Reports screens.
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canAddSupplierExpense', defaults={'allowed': False})
+        ids_add_off = {row['id'] for row in self.client.get(f'/api/expense-transactions/?project={self.project.id}').data}
+        self.assertIn(tx_id, ids_add_off)
+
+        # Turn the VIEW permission off: the row must disappear from this manager's list even though
+        # the project itself is still viewable to them.
+        RolePermission.objects.update_or_create(role='MANAGER', permission='canViewSuppliers', defaults={'allowed': False})
+        ids2 = {row['id'] for row in self.client.get(f'/api/expense-transactions/?project={self.project.id}').data}
+        self.assertNotIn(tx_id, ids2)
+
+    def test_owner_still_sees_everything(self):
+        r = self.create_supplier_expense(self.manager_user)
+        tx_id = r.data['id']
+        self.auth_as(self.owner_user)
+        ids = {row['id'] for row in self.client.get(f'/api/expense-transactions/?project={self.project.id}').data}
+        self.assertIn(tx_id, ids)

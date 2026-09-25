@@ -35,6 +35,10 @@
       saved: 'Saved.', memberAdded: 'Member added.', memberRemoved: 'Removed.', roleChanged: 'Role changed.',
       confirmRemoveMember: 'Remove this person from the project?',
       nameRequired: 'Enter a project name.',
+      managerDashboard: 'Manager', thisWeek: 'This week', thisMonth: 'This month', customRange: 'Custom range',
+      fromDate: 'From', toDate: 'To', inTotal: 'In', outTotal: 'Out', txnCount: 'Count', loadMore: 'Load more',
+      history: 'History', noTransactionsYet: 'No transactions in this range.', fundReceivedTitle: 'Total Fund Received',
+      totalDistributedTitle: 'Total Distributed', availableBalanceTitle: 'Available Balance',
     },
     hi: {
       changePassword: 'पासवर्ड बदलें', logout: 'लॉग आउट', language: 'भाषा',
@@ -51,6 +55,10 @@
       saved: 'सेव हो गया.', memberAdded: 'सदस्य जुड़ गया.', memberRemoved: 'हटा दिया.', roleChanged: 'भूमिका बदल गई.', noMembersYet: 'अभी कोई सदस्य नहीं है.',
       confirmRemoveMember: 'इस व्यक्ति को प्रोजेक्ट से हटाएँ?',
       nameRequired: 'प्रोजेक्ट का नाम भरें.',
+      managerDashboard: 'मैनेजर', thisWeek: 'इस हफ़्ते', thisMonth: 'इस महीने', customRange: 'तारीख चुनें',
+      fromDate: 'से', toDate: 'तक', inTotal: 'आया', outTotal: 'गया', txnCount: 'गिनती', loadMore: 'और दिखाएँ',
+      history: 'इतिहास', noTransactionsYet: 'इस अवधि में कोई लेन-देन नहीं है.', fundReceivedTitle: 'कुल फंड मिला',
+      totalDistributedTitle: 'कुल बाँटा गया', availableBalanceTitle: 'बचा हुआ फंड',
     },
   };
 

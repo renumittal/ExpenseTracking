@@ -34,6 +34,21 @@ from .models import (
     active_distributions,
 )
 
+
+def _manager_other_expenses(project, manager):
+    """Active MISCELLANEOUS ('Other') expenses this manager personally recorded on this project.
+
+    A manager's "Total Distributed" is not only what they've handed to labour out of a
+    ManagerFund (ManagerLabourDistribution) -- it also includes Other-category expenses they
+    record directly (canAddMiscExpense). Those never touch ManagerLabourDistribution, so a
+    formula that only summed distributions under-counted a manager's real spend. Identified by
+    created_by (the manager's own user), not paid_by_owner (which is always an Owner row).
+    """
+    return ExpenseTransaction.objects.filter(
+        project=project, expense_category=ExpenseCategory.MISCELLANEOUS,
+        status=TransactionStatus.ACTIVE, created_by=manager.user_id,
+    )
+
 ZERO = Decimal('0.00')
 
 
@@ -42,10 +57,19 @@ def _sum(queryset, field):
 
 
 def position(project, manager):
-    """A manager's complete fund position on one project (computed from the database every time)."""
+    """
+    A manager's complete fund position on one project (computed from the database every time).
+
+    total_distributed = active labour distributions (money handed to labour out of this
+    manager's fund) + active Other-category expenses this manager recorded themselves. Previously
+    this only counted labour distributions, which under-stated how much of the fund a manager who
+    also records Other expenses had actually spent.
+    """
     received = _sum(ManagerFund.objects.filter(project=project, manager=manager), 'fund_amount')
-    distributed = _sum(
-        active_distributions(ManagerLabourDistribution.objects.filter(project=project, manager=manager)), 'amount')
+    distributed = (
+        _sum(active_distributions(ManagerLabourDistribution.objects.filter(project=project, manager=manager)), 'amount')
+        + _sum(_manager_other_expenses(project, manager), 'amount')
+    )
     return {
         'project_id': project.id,
         'project_code': project.code,
