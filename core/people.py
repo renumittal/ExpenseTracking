@@ -13,7 +13,7 @@ import re
 from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Q
 from rest_framework import status
 from rest_framework.authtoken.models import Token
@@ -23,9 +23,10 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .access import services
+from .access.sync import LEGACY_ROLE_NAME
 from .models import (
-    AccessRole, ExpenseTransaction, Manager, ManagerFund, Owner, Project, Role, RolePermission, ScopeType,
-    UserAccess,
+    AccessRole, ExpenseTransaction, Manager, ManagerFund, Owner, Project, ResourcePermission, Role, RolePermission,
+    ScopeType, UserAccess,
 )
 from .permissions import CAN_MANAGE_USERS, CAN_RESET_USER_PASSWORD, has_permission, is_admin, owns_project
 
@@ -350,7 +351,26 @@ class PermissionMatrixView(APIView):
                 role = WEB_ROLES.get(web_role)
                 if role in (None, 'ADMIN') or not isinstance(allowed, bool):
                     continue                    # admin cannot be edited (it is never locked out)
-                RolePermission.objects.update_or_create(role=role, permission=permission, defaults={'allowed': allowed})
+                try:
+                    with transaction.atomic():
+                        RolePermission.objects.update_or_create(
+                            role=role, permission=permission, defaults={'allowed': allowed},
+                        )
+                except IntegrityError:
+                    # The deprecated `role`/`permission` strings looked up above can drift from the
+                    # real `role_fk`/`resource_permission` FKs after a permission rename (see migration
+                    # 0013) -- a stale string finds no row to update and tries to create one that
+                    # collides with the FK pair's unique constraint. Fall back to the FK identity,
+                    # which is the source of truth, and resync the strings onto that row instead of
+                    # letting the whole save fail with a 500.
+                    resource_permission = ResourcePermission.objects.filter(code=permission).first()
+                    role_fk = AccessRole.objects.filter(name=LEGACY_ROLE_NAME.get(role)).first()
+                    if resource_permission is None or role_fk is None:
+                        raise
+                    RolePermission.objects.update_or_create(
+                        role_fk=role_fk, resource_permission=resource_permission,
+                        defaults={'allowed': allowed, 'role': role, 'permission': permission},
+                    )
         return Response(stored_matrix())
 
     @transaction.atomic
