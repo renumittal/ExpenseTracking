@@ -897,6 +897,22 @@
     chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
     if (!allowedCats().length && !can('canGiveManagerFund')) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
+
+    const cats = allowedCats();
+    // A manager's only legitimate way to pay labour is out of their own ManagerFund (balance-checked,
+    // no owner/payment-mode to pick -- both come from the fund) -- never as a bare, unchecked expense.
+    // Rather than maintain that as a second, redundant "pay labour" implementation here, send anyone
+    // who holds canDistributeManagerFund straight to #/distribute for Labour before doing any of this
+    // screen's own loading; Owners (who have no fund to distribute from, and pay labour directly out
+    // of project cash with zero effect on any manager's balance) keep the normal category picker/local
+    // form below, unchanged.
+    const managerFundLabour = can('canDistributeManagerFund');
+    const wantCat = TAB_TO_CAT[((params && params.get('tab')) || '').toLowerCase()];
+    if (managerFundLabour && (wantCat === 'LABOUR' || (cats.length === 1 && cats[0].key === 'LABOUR'))) {
+      location.hash = '#/distribute';
+      return;
+    }
+
     loading();
     let names;
     try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionAdd)); return; }
@@ -914,7 +930,6 @@
     // With exactly one usable category and no "Give Fund" alternative, there is nothing to pick --
     // showing a full-size single-button choice grid just to confirm the obvious wastes a screenful
     // on a phone, so collapse step 1 to a plain confirmation line and preselect it.
-    const cats = allowedCats();
     const singleCat = cats.length === 1 && !can('canGiveManagerFund');
     const f = { cat: singleCat ? cats[0].key : '', amount: '', name: '', contractId: '', supplierId: '', what: '', date: today(), mode: 'CASH', note: '',
       ownerId: state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '') };
@@ -932,7 +947,9 @@
         ? `<div class="step cat-fixed" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')} <b>${catLabel(cats[0])}</b></div>
         <div class="field-error" id="e-cat"></div></div>`
         : `<div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
-        <div class="choices">${cats.map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
+        <div class="choices">${cats.map(c => c.key === 'LABOUR' && managerFundLabour
+          ? `<a class="choice" href="#/distribute"><span class="ico">${c.icon}</span>${catLabel(c)}</a>`
+          : `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}${can('canGiveManagerFund') ? `<a class="choice" href="#/givefund"><span class="ico">💰</span>${L('फंड दें', 'Give Fund')}</a>` : ''}</div>
         <div class="field-error" id="e-cat"></div></div>`}
       <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>${L('कितना पैसा?', 'Amount')}</label>
         <div class="rupee"><span>₹</span><input id="amt" type="text" inputmode="decimal" pattern="[0-9.]*" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
@@ -1503,7 +1520,7 @@
     });
     // #/add?tab=labour|other|supplier|contractor: pre-select that category's button (falls back to
     // no pre-selection -- the normal step-1 picker -- when the tab is missing or not permitted).
-    const wantCat = TAB_TO_CAT[((params && params.get('tab')) || '').toLowerCase()];
+    // (wantCat itself was already computed above, where a LABOUR want redirects to #/distribute.)
     if (wantCat && allowedCats().some(c => c.key === wantCat)) {
       const tabBtn = document.querySelector(`[data-cat="${wantCat}"]`);
       if (tabBtn) tabBtn.click();
@@ -2778,7 +2795,7 @@
     const picked = new Set(), amt = {};
     let q = '', showInactive = false, available = 0, saving = false;
 
-    $view.innerHTML = `${title}
+    $view.innerHTML = `<div class="distribute-labour">${title}
       ${state.projects.length > 1 ? `<select id="dproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
       <div id="dmsg"></div>
       <form id="df" novalidate>
@@ -2797,7 +2814,7 @@
         <label for="d-note-in">${L('जानकारी', 'Remarks (optional)')}</label><input id="d-note-in" type="text" autocomplete="off">
         <button class="btn green" type="submit" id="d-save">💾 ${L('बाँट दें', 'SAVE DISTRIBUTION')}</button>
         <a class="btn line" href="#/fund">${L('रद्द करें', 'Cancel')}</a>
-      </form>`;
+      </form></div>`;
     const $ = id => document.getElementById(id);
     const sum = () => [...picked].reduce((t, id) => t + toPaise(amt[id]), 0);
     const problem = () => {
