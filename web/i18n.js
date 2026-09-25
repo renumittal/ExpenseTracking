@@ -1,12 +1,9 @@
 /* Language preference for the web app: English or Hindi.
 
-   This app already shows both languages together everywhere (Hindi as the big primary line, English
-   as a small subtitle) -- that dual-language layout stays as-is; it already serves a reader of either
-   language and rewriting every screen to hide one language would be a much larger, riskier change
-   than what "add a language switcher" needs. What this module controls is the *chrome* that has a
-   single, structured bilingual source already (web/authz.js's NAV/GROUPS `{hi, en}` pairs, and the
-   labels below): which of the two lines is primary, and a few standalone chrome strings that only
-   exist as one string today (Save/Cancel/Back/Logout/...).
+   Every screen shows ONE language at a time, picked by this switcher -- never both languages mixed
+   together. web/app.js's `L(hi, en)` helper reads the current language (via getLang() below) to pick
+   which string to render; this module itself covers the app *chrome* (user menu, nav, Settings) via
+   t()/primary(), using the STRINGS table and web/authz.js's NAV/GROUPS `{hi, en}` pairs.
 
    Default is English, always -- this deliberately never reads navigator.language (a browser set to
    Hindi must not silently change the app's language). Once a person switches, the choice is
@@ -75,12 +72,10 @@
     return (STRINGS[lang] && STRINGS[lang][key]) || (STRINGS.en[key]) || key;
   }
 
-  // Pick whichever of a {hi, en} pair is "primary" for the current language, and the other as the
-  // small secondary line -- same pair, just swapped, matching the app's existing primary+sub layout.
+  // Pick whichever of a {hi, en} pair matches the current language -- e.g. web/authz.js's NAV entries.
   function primary(pair) { return getLang() === 'hi' ? pair.hi : pair.en; }
-  function secondary(pair) { return getLang() === 'hi' ? pair.en : pair.hi; }
 
   document.documentElement.lang = getLang();
 
-  window.I18n = { LANGS, getLang, setLang, t, primary, secondary };
+  window.I18n = { LANGS, getLang, setLang, t, primary };
 })();

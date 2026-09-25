@@ -5,9 +5,12 @@
 
   // Shown in the user menu, and bumped whenever the app ships a user-visible change --
   // bump web/sw.js's CACHE version in the same commit so the install and the label agree.
-  const APP_VERSION = 'v9';
+  const APP_VERSION = 'v10';
 
   // ---------- words the user sees ----------
+  // L(hi, en) shows only ONE language at a time, picked by the current language switcher --
+  // never both together (see web/i18n.js for how the switcher's choice is stored).
+  const L = (hi, en) => (I18n.getLang() === 'hi' ? hi : en);
   const CATS = [
     { key: 'LABOUR',        icon: '👷', hi: 'मज़दूर',   en: 'Labour',     type: 'Labour Payment',     party: 'LABOUR' },
     { key: 'CONTRACTOR',    icon: '🏗️', hi: 'ठेकेदार',  en: 'Contractor', type: 'Contractor Payment', party: 'CONTRACTOR' },
@@ -15,22 +18,30 @@
     { key: 'MISCELLANEOUS', icon: '📦', hi: 'दूसरा खर्च', en: 'Other',      type: 'Other',              party: 'NONE' },
   ];
   const CAT = Object.fromEntries(CATS.map(c => [c.key, c]));
+  const catLabel = c => L(c.hi, c.en);
   const MODES = [
     { key: 'CASH', hi: 'नकद', en: 'Cash' },
     { key: 'UPI', hi: 'UPI', en: 'UPI' },
     { key: 'BANK_TRANSFER', hi: 'बैंक', en: 'Bank' },
     { key: 'CHEQUE', hi: 'चेक', en: 'Cheque' },
   ];
+  const modeLabel = m => L(m.hi, m.en);
   const SUPPLIER_TYPES = ['Electrical Material', 'Plumbing Material', 'Building Material', 'Saria / Steel',
     'Chokhat / Door', 'Wood / Timber', 'Paint / Hardware', 'Other'];
-  const STATUS_HI = { PLANNED: 'शुरू होना बाकी', ONGOING: 'काम चालू है', COMPLETED: 'काम पूरा हो गया', ARCHIVED: 'आर्काइव' };
-  const MONTHS = ['जनवरी', 'फ़रवरी', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितंबर', 'अक्तूबर', 'नवंबर', 'दिसंबर'];
+  const STATUS_KEY = { PLANNED: 'statusPlanned', ONGOING: 'statusOngoing', COMPLETED: 'statusCompleted', ARCHIVED: 'statusArchived' };
+  const statusLabel = s => I18n.t(STATUS_KEY[s] || s);
+  const MONTHS_HI = ['जनवरी', 'फ़रवरी', 'मार्च', 'अप्रैल', 'मई', 'जून', 'जुलाई', 'अगस्त', 'सितंबर', 'अक्तूबर', 'नवंबर', 'दिसंबर'];
+  const MONTHS_EN_FULL = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
   const MSG = {
-    problem: 'कुछ समस्या हुई। कृपया दोबारा प्रयास करें.',
-    network: 'इंटरनेट नहीं चल रहा है। कृपया इंटरनेट देखकर दोबारा प्रयास करें.',
-    login: 'नाम या पासवर्ड गलत है। कृपया दोबारा भरें.',
-    saved: 'खर्च सफलतापूर्वक सेव हो गया.',
-    noPermission: 'इस प्रोजेक्ट पर खर्च डालने की अनुमति नहीं है.',
+    get problem() { return L('कुछ समस्या हुई। कृपया दोबारा प्रयास करें.', 'Something went wrong. Please try again.'); },
+    get network() { return L('इंटरनेट नहीं चल रहा है। कृपया इंटरनेट देखकर दोबारा प्रयास करें.', 'No internet connection. Please check and try again.'); },
+    get login() { return L('नाम या पासवर्ड गलत है। कृपया दोबारा भरें.', 'Incorrect username or password. Please try again.'); },
+    get saved() { return L('खर्च सफलतापूर्वक सेव हो गया.', 'Expense saved successfully.'); },
+    // 403 messages: kept per-screen so a denial on one screen (e.g. Add Expense) is never shown
+    // while the user is looking at an unrelated screen (e.g. Dashboard) -- see friendly() below.
+    get forbidden() { return L('आपको इसकी अनुमति नहीं है.', 'You do not have permission for this.'); },
+    get noPermissionAdd() { return L('इस प्रोजेक्ट पर खर्च डालने की अनुमति नहीं है.', 'You do not have permission to add expenses on this project.'); },
+    get noPermissionView() { return L('इस जानकारी को देखने की अनुमति नहीं है.', 'You do not have permission to view this.'); },
   };
 
   // ---------- small helpers ----------
@@ -53,7 +64,7 @@
   const yesterday = () => { const d = new Date(); d.setDate(d.getDate() - 1); return iso(d); };
   const EN_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   const shortDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${String(d).padStart(2, '0')}-${EN_MONTHS[m - 1]}-${y}` : ''; };
-  const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${MONTHS[m - 1]} ${y}` : ''; };
+  const niceDate = s => { const [y, m, d] = String(s).split('-').map(Number); return y ? `${d} ${L(MONTHS_HI[m - 1], MONTHS_EN_FULL[m - 1])} ${y}` : ''; };
 
   const state = { token: store.get('token'), me: null, user: null, realProjects: [], projects: [], project: null, names: null, demoId: store.get('demoUser'), fundForbidden: false };
   // Set once a new service worker has installed alongside a still-running old one (see the
@@ -79,8 +90,8 @@
   const canAny = perms => Authz.allows(perms, can);               // a screen may need one permission, any of several, or a rule
   const canAdd = () => canAny(Authz.routePermission('add'));     // Add Expense screen (expense or labour payment)
   const noProject = () => can('canCreateProject')
-    ? `<div class="empty"><div class="ico">🏠</div><h2>अभी कोई प्रोजेक्ट नहीं है</h2><p>No projects exist yet.</p></div><a class="btn green" href="#/settings/new">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>`
-    : '<div class="empty"><div class="ico">🏠</div><h2>आपको अभी कोई प्रोजेक्ट नहीं दिया गया है</h2><p>कृपया एडमिन से संपर्क करें.<br>No projects have been assigned to you yet.<br>Please contact the administrator.</p></div>';
+    ? `<div class="empty"><div class="ico">🏠</div><h2>${L('अभी कोई प्रोजेक्ट नहीं है', 'No projects exist yet')}</h2></div><a class="btn green" href="#/settings/new">➕ ${L('नया प्रोजेक्ट', 'New Project')}</a>`
+    : `<div class="empty"><div class="ico">🏠</div><h2>${L('आपको अभी कोई प्रोजेक्ट नहीं दिया गया है', 'No projects have been assigned to you yet')}</h2><p>${L('कृपया एडमिन से संपर्क करें.', 'Please contact the administrator.')}</p></div>`;
 
   class AppError extends Error {
     constructor(kind, status, data) { super(kind); this.kind = kind; this.status = status; this.data = data; }
@@ -122,9 +133,12 @@
     })(e.data);
     return out.slice(0, 3).join(' ');
   }
-  const friendly = e => (e && e.kind === 'network' ? MSG.network : e && e.status === 403 ? MSG.noPermission : MSG.problem);
+  // `forbiddenMsg` is the 403 text for this call site specifically (e.g. MSG.noPermissionView on a
+  // view-only screen, MSG.noPermissionAdd on the Add Expense submit) -- defaults to a generic denial
+  // so a screen that has no reason to mention "add expense" never shows that wording.
+  const friendly = (e, forbiddenMsg) => (e && e.kind === 'network' ? MSG.network : e && e.status === 403 ? (forbiddenMsg || MSG.forbidden) : MSG.problem);
   const errBox = text => `<div class="msg error" role="alert">${esc(text)}</div>`;
-  const loading = () => { $view.innerHTML = '<div class="spinner">⏳ रुकिए...</div>'; };
+  const loading = () => { $view.innerHTML = `<div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div>`; };
 
   function logoutLocal() {
     store.del('token'); store.del('projectId'); store.del('demoUser');
@@ -202,7 +216,7 @@
           ${can('canChangeOwnPassword') ? `<a class="user-menu-item" role="menuitem" href="#/profile">🔑 ${esc(I18n.t('changePassword'))}</a>` : ''}
           ${can('canManagePermissions') ? `<a class="user-menu-item" role="menuitem" href="#/settings">⚙️ ${esc(I18n.t('settings'))}</a>` : ''}
           <button type="button" class="user-menu-item" role="menuitem" id="logoutBtn">🚪 ${esc(I18n.t('logout'))}</button>
-          <button type="button" class="user-menu-item" role="menuitem" id="hardRefreshBtn">🔄 ${I18n.getLang() === 'hi' ? 'पूरा रीफ्रेश करें' : 'Hard refresh'}</button>
+          <button type="button" class="user-menu-item" role="menuitem" id="hardRefreshBtn">🔄 ${L('पूरा रीफ्रेश करें', 'Hard refresh')}</button>
           <div class="user-menu-divider"></div>
           <div class="user-menu-version">Expense Tracker ${APP_VERSION}</div>
         </div>
@@ -257,14 +271,14 @@
     const warn = document.getElementById('permWarning');
     const showWarning = loggedIn && state.user && !state.user.demo && Authz.matrixState() === 'error';
     warn.hidden = !showWarning;
-    if (showWarning) warn.textContent = I18n.getLang() === 'hi'
-      ? 'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें.'
-      : 'Permissions could not be loaded -- some buttons may be hidden. Please reload the page.';
+    if (showWarning) warn.textContent = L(
+      'अनुमतियाँ लोड नहीं हो पाईं, कुछ बटन छिपे हो सकते हैं। कृपया पेज रीलोड करें.',
+      'Permissions could not be loaded -- some buttons may be hidden. Please reload the page.');
     const updateBanner = document.getElementById('updateBanner');
     updateBanner.hidden = !updateAvailable;
-    if (updateAvailable) updateBanner.textContent = I18n.getLang() === 'hi'
-      ? '🔄 नया वर्शन उपलब्ध है. रीलोड करने के लिए यहाँ टैप करें.'
-      : '🔄 A new version is available. Tap here to reload.';
+    if (updateAvailable) updateBanner.textContent = L(
+      '🔄 नया वर्शन उपलब्ध है. रीलोड करने के लिए यहाँ टैप करें.',
+      '🔄 A new version is available. Tap here to reload.');
     const nav = document.getElementById('tabs');
     const items = loggedIn && state.user ? Authz.navFor(can) : [];
     const more = items.filter(n => !n.primary);
@@ -272,7 +286,7 @@
       + (more.length ? `<button type="button" id="menuBtn" data-tab="menu" aria-expanded="false"><span>☰</span>${I18n.t('menu')}</button>` : '');
     const sheet = document.getElementById('menuSheet');
     sheet.hidden = true;
-    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)} <small>${I18n.secondary(n)}</small></a>`).join('');
+    sheet.innerHTML = more.map(n => `<a href="${n.hash}" data-tab="${n.id}"><span>${n.icon}</span>${I18n.primary(n)}</a>`).join('');
     const menuBtn = document.getElementById('menuBtn');
     if (menuBtn) {
       menuBtn.onclick = () => { sheet.hidden = !sheet.hidden; menuBtn.setAttribute('aria-expanded', String(!sheet.hidden)); };
@@ -283,7 +297,11 @@
     document.body.classList.toggle('no-tabs', document.getElementById('tabs').hidden);
     const top = document.getElementById('topbar');
     top.hidden = !back;
-    if (back) document.getElementById('backBtn').setAttribute('href', back);
+    if (back) {
+      const backBtn = document.getElementById('backBtn');
+      backBtn.setAttribute('href', back);
+      backBtn.innerHTML = `← ${L('वापस', 'BACK')}`;
+    }
     document.querySelectorAll('.tabs a').forEach(a => a.classList.toggle('on', a.dataset.tab === tab));
     window.scrollTo(0, 0);
   }
@@ -295,35 +313,35 @@
   // ---------- screens ----------
   function screenNoAccess() {
     chrome('noaccess', '#/home');
-    $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>इस पेज की अनुमति नहीं है</h2><p>You do not have access to this page.</p></div>
-      <a class="btn line" href="#/home">🏠 होम पर जाएँ <span class="sub">Home</span></a>`;
+    $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('इस पेज की अनुमति नहीं है', 'You do not have access to this page.')}</h2></div>
+      <a class="btn line" href="#/home">🏠 ${L('होम पर जाएँ', 'Home')}</a>`;
   }
 
   function screenLogin() {
     chrome('login');
     $view.innerHTML = `
-      <h1>🙏 नमस्ते</h1>
-      <p class="muted">अपना नाम और पासवर्ड भरिए.</p>
+      <h1>🙏 ${L('नमस्ते', 'Welcome')}</h1>
+      <p class="muted">${L('अपना नाम और पासवर्ड भरिए.', 'Enter your username and password.')}</p>
       <div id="err"></div>
       <form id="f" novalidate>
-        <div class="step"><label for="u">आपका नाम <small>(User name)</small></label>
+        <div class="step"><label for="u">${L('आपका नाम', 'User name')}</label>
           <input id="u" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" enterkeyhint="next"></div>
-        <div class="step"><label for="p" class="q">पासवर्ड <small>(Password)</small></label>
+        <div class="step"><label for="p" class="q">${L('पासवर्ड', 'Password')}</label>
           <input id="p" type="password" autocomplete="current-password" enterkeyhint="go">
-          <button type="button" class="btn line" id="show" style="min-height:52px;font-size:1rem">👁 पासवर्ड दिखाएँ</button></div>
-        <button class="btn green big" type="submit">✅ अंदर जाएँ <span class="sub">LOGIN</span></button>
+          <button type="button" class="btn line" id="show" style="min-height:52px;font-size:1rem">👁 ${L('पासवर्ड दिखाएँ', 'Show password')}</button></div>
+        <button class="btn green big" type="submit">✅ ${L('अंदर जाएँ', 'LOGIN')}</button>
       </form>`;
     const p = document.getElementById('p');
     document.getElementById('show').onclick = e => {
       p.type = p.type === 'password' ? 'text' : 'password';
-      e.currentTarget.textContent = p.type === 'password' ? '👁 पासवर्ड दिखाएँ' : '🙈 पासवर्ड छिपाएँ';
+      e.currentTarget.textContent = p.type === 'password' ? `👁 ${L('पासवर्ड दिखाएँ', 'Show password')}` : `🙈 ${L('पासवर्ड छिपाएँ', 'Hide password')}`;
     };
     document.getElementById('f').onsubmit = async ev => {
       ev.preventDefault();
       const err = document.getElementById('err');
       const username = document.getElementById('u').value.trim();
-      if (!username) { err.innerHTML = errBox('कृपया अपना नाम भरें.'); return; }
-      if (!p.value) { err.innerHTML = errBox('कृपया पासवर्ड भरें.'); return; }
+      if (!username) { err.innerHTML = errBox(L('कृपया अपना नाम भरें.', 'Please enter your username.')); return; }
+      if (!p.value) { err.innerHTML = errBox(L('कृपया पासवर्ड भरें.', 'Please enter your password.')); return; }
       const btn = ev.submitter || ev.target.querySelector('button[type=submit]');
       btn.disabled = true;
       try {
@@ -341,9 +359,9 @@
     chrome('blocked');
     $view.innerHTML = `
       <div class="empty"><div class="ico">🙏</div>
-        <h1>यह लॉगिन खर्च डालने के लिए नहीं है</h1>
-        <p>कृपया मालिक वाले नाम और पासवर्ड से अंदर जाएँ.</p></div>
-      <button class="btn line" id="out">🚪 बाहर निकलें <span class="sub">LOGOUT</span></button>`;
+        <h1>${L('यह लॉगिन खर्च डालने के लिए नहीं है', 'This login is not for adding expenses')}</h1>
+        <p>${L('कृपया मालिक वाले नाम और पासवर्ड से अंदर जाएँ.', 'Please log in with an owner username and password.')}</p></div>
+      <button class="btn line" id="out">🚪 ${L('बाहर निकलें', 'LOGOUT')}</button>`;
     document.getElementById('out').onclick = doLogout;
   }
 
@@ -375,14 +393,14 @@
     chrome('home');
     const proj = state.project;
     $view.innerHTML = `
-      <h1>नमस्ते, ${esc(state.user.name)} 🙏</h1>
-      ${proj ? '<p class="muted">प्रोजेक्ट: <b>' + esc(proj.name) + '</b></p>' : noProject()}
+      <h1>${L('नमस्ते', 'Hello')}, ${esc(state.user.name)} 🙏</h1>
+      ${proj ? `<p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(proj.name)}</b></p>` : noProject()}
       <div class="home-grid">
-        ${canAdd() ? '<a class="btn green big" href="#/add"><span class="ico">➕</span><span>खर्च डालें<span class="sub">Add Expense</span></span></a>' : ''}
-        ${can('canViewExpenses') ? '<a class="btn big" href="#/list"><span class="ico">📋</span><span>खर्च देखें<span class="sub">View Expenses</span></span></a>' : ''}
-        ${can('canViewProjects') ? '<a class="btn big" href="#/project"><span class="ico">🏠</span><span>मेरा प्रोजेक्ट<span class="sub">My Project</span></span></a>' : ''}
-        ${can('canViewManagerFund') ? '<a class="btn big" href="#/fund"><span class="ico">💰</span><span>मैनेजर फंड<span class="sub">Manager Fund</span></span></a>' : ''}
-        ${can('canViewReports') ? '<a class="btn big" href="#/reports"><span class="ico">📊</span><span>हिसाब देखें<span class="sub">Total Expense</span></span></a>' : ''}
+        ${canAdd() ? `<a class="btn green big" href="#/add"><span class="ico">➕</span><span>${L('खर्च डालें', 'Add Expense')}</span></a>` : ''}
+        ${can('canViewExpenses') ? `<a class="btn big" href="#/list"><span class="ico">📋</span><span>${L('खर्च देखें', 'View Expenses')}</span></a>` : ''}
+        ${can('canViewProjects') ? `<a class="btn big" href="#/project"><span class="ico">🏠</span><span>${L('मेरा प्रोजेक्ट', 'My Project')}</span></a>` : ''}
+        ${can('canViewManagerFund') ? `<a class="btn big" href="#/fund"><span class="ico">💰</span><span>${L('मैनेजर फंड', 'Manager Fund')}</span></a>` : ''}
+        ${can('canViewReports') ? `<a class="btn big" href="#/reports"><span class="ico">📊</span><span>${L('हिसाब देखें', 'Total Expense')}</span></a>` : ''}
       </div>`;
   }
 
@@ -395,18 +413,18 @@
       if (!state.projects.length) { $view.innerHTML = noProject(); return; }
       const many = state.projects.length > 1;
       const shownFlash = projectFlash; projectFlash = '';
-      $view.innerHTML = `<h1>🏗️ ${many ? 'मेरे प्रोजेक्ट' : 'मेरा प्रोजेक्ट'} <small>Projects</small></h1>` +
+      $view.innerHTML = `<h1>🏗️ ${L(many ? 'मेरे प्रोजेक्ट' : 'मेरा प्रोजेक्ट', 'Projects')}</h1>` +
         (shownFlash ? `<div class="msg ok" role="status">${esc(shownFlash)}</div>` : '') +
-        (can('canCreateProject') ? '<a class="btn green" href="#/settings/new">➕ नया प्रोजेक्ट <span class="sub">New Project</span></a>' : '') +
-        (many ? '<p class="muted">जिस प्रोजेक्ट में काम करना है उसे छूइए.</p>' : '') +
+        (can('canCreateProject') ? `<a class="btn green" href="#/settings/new">➕ ${L('नया प्रोजेक्ट', 'New Project')}</a>` : '') +
+        (many ? `<p class="muted">${L('जिस प्रोजेक्ट में काम करना है उसे छूइए.', 'Tap the project you want to work on.')}</p>` : '') +
         (state.projects.map((p, i) => `
           <${many ? 'button type="button"' : 'div'} class="card pick ${p.id === state.project.id ? 'on' : ''}" data-id="${p.id}">
-            <div class="row"><b style="font-size:1.3rem">${esc(p.name)}</b>${many && p.id === state.project.id ? '<span class="pill">✔ चुना है</span>' : ''}</div>
+            <div class="row"><b style="font-size:1.3rem">${esc(p.name)}</b>${many && p.id === state.project.id ? `<span class="pill">✔ ${L('चुना है', 'Selected')}</span>` : ''}</div>
             <div><span class="pill">${esc(Authz.ROLE_LABEL[Authz.roleIn(state.user, p.id)] || '')}</span></div>
             ${p.location ? `<div class="muted">📍 ${esc(p.location)}</div>` : ''}
-            ${p.plot_size ? `<div class="muted">प्लॉट: ${esc(p.plot_size)}</div>` : ''}
-            <div class="muted">${esc(STATUS_HI[p.status] || '')}${p.start_date ? ' · शुरू: ' + niceDate(p.start_date) : ''}</div>
-            ${totals[i] ? `<div style="margin-top:8px">कुल खर्च <span class="amount">${money(totals[i].total_expense)}</span></div>` : ''}
+            ${p.plot_size ? `<div class="muted">${L('प्लॉट', 'Plot')}: ${esc(p.plot_size)}</div>` : ''}
+            <div class="muted">${esc(statusLabel(p.status))}${p.start_date ? ` · ${L('शुरू', 'Started')}: ` + niceDate(p.start_date) : ''}</div>
+            ${totals[i] ? `<div style="margin-top:8px">${L('कुल खर्च', 'Total Expense')} <span class="amount">${money(totals[i].total_expense)}</span></div>` : ''}
           </${many ? 'button' : 'div'}>`).join('') || noProject());
       $view.querySelectorAll('button.pick').forEach(b => b.onclick = () => {
         state.project = state.projects.find(p => p.id === Number(b.dataset.id));
@@ -414,17 +432,17 @@
         state.names = null;
         location.hash = '#/home';
       });
-    } catch (e) { $view.innerHTML = errBox(friendly(e)); }
+    } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); }
   }
 
   // ----- Add expense -----
   async function screenAdd() {
     chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
-    if (!allowedCats().length) { $view.innerHTML = '<div class="empty"><div class="ico">🔒</div><h2>अभी कोई खर्च श्रेणी उपलब्ध नहीं है</h2><p>No expense category is available to you.</p></div>'; return; }
+    if (!allowedCats().length) { $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('अभी कोई खर्च श्रेणी उपलब्ध नहीं है', 'No expense category is available to you.')}</h2></div>`; return; }
     loading();
     let names;
-    try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    try { names = await loadNames(); } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionAdd)); return; }
 
     // A manager has no Owner record of their own; every expense still needs one attached
     // (`paid_by_owner`), so a manager picks which of the project's real owners it's on behalf of.
@@ -432,7 +450,7 @@
     // to and the form can't be used at all.
     const ownerChoices = state.me.owner_id ? [] : (names.owners || []);
     if (!state.me.owner_id && !ownerChoices.length) {
-      $view.innerHTML = '<div class="empty"><div class="ico">🔒</div><h2>इस प्रोजेक्ट पर कोई मालिक नहीं जुड़ा है</h2><p>No owner is assigned to this project, so an expense cannot be attributed. Please contact the administrator.</p></div>';
+      $view.innerHTML = `<div class="empty"><div class="ico">🔒</div><h2>${L('इस प्रोजेक्ट पर कोई मालिक नहीं जुड़ा है', 'No owner is assigned to this project')}</h2><p>${L('खर्च दर्ज नहीं किया जा सकता। कृपया एडमिन से संपर्क करें.', 'An expense cannot be attributed. Please contact the administrator.')}</p></div>`;
       return;
     }
 
@@ -440,30 +458,30 @@
       ownerId: state.me.owner_id || (ownerChoices.length === 1 ? ownerChoices[0].id : '') };
     let saving = false;
     $view.innerHTML = `
-      <h1>➕ खर्च डालें <small>Add Expense</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
-      ${state.projects.length > 1 && can('canViewProjects') ? '<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 प्रोजेक्ट बदलें <span class="sub">Change Project</span></a>' : ''}
+      <h1>➕ ${L('खर्च डालें', 'Add Expense')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
+      ${state.projects.length > 1 && can('canViewProjects') ? `<a class="btn line" href="#/project" style="min-height:56px;font-size:1.05rem">🔁 ${L('प्रोजेक्ट बदलें', 'Change Project')}</a>` : ''}
       <div id="top"></div>
-      ${ownerChoices.length > 1 ? `<div class="step" id="s-owner"><label for="owner">किस मालिक की तरफ से? <small>On behalf of</small></label>
-        <select id="owner"><option value="">— मालिक चुनिए —</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
+      ${ownerChoices.length > 1 ? `<div class="step" id="s-owner"><label for="owner">${L('किस मालिक की तरफ से?', 'On behalf of')}</label>
+        <select id="owner"><option value="">${L('— मालिक चुनिए —', '— Choose an owner —')}</option>${ownerChoices.map(o => `<option value="${o.id}">${esc(o.name)}</option>`).join('')}</select>
         <div class="field-error" id="e-owner"></div></div>` : ''}
-      <div class="step" id="s-cat"><div class="q"><span class="num">1</span>किस चीज़ का खर्च है?</div>
-        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${c.hi}<br><small>${c.en}</small></button>`).join('')}</div>
+      <div class="step" id="s-cat"><div class="q"><span class="num">1</span>${L('किस चीज़ का खर्च है?', 'What is this expense for?')}</div>
+        <div class="choices">${allowedCats().map(c => `<button type="button" class="choice" data-cat="${c.key}" aria-pressed="false"><span class="ico">${c.icon}</span>${catLabel(c)}</button>`).join('')}</div>
         <div class="field-error" id="e-cat"></div></div>
-      <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>कितना पैसा? <small>Amount</small></label>
+      <div class="step" id="s-amt"><label for="amt"><span class="num">2</span>${L('कितना पैसा?', 'Amount')}</label>
         <div class="rupee"><span>₹</span><input id="amt" type="text" inputmode="decimal" pattern="[0-9.]*" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
         <div class="words" id="words"></div><div class="field-error" id="e-amt"></div></div>
       <div class="step" id="s-who"></div>
-      <div class="step" id="s-date"><label for="date"><span class="num">4</span>कब दिया? <small>Date</small></label>
+      <div class="step" id="s-date"><label for="date"><span class="num">4</span>${L('कब दिया?', 'Date')}</label>
         <input id="date" type="date" value="${f.date}">
-        <div class="quick"><button type="button" class="choice" data-d="0">आज<br><small>Today</small></button><button type="button" class="choice" data-d="1">कल<br><small>Yesterday</small></button></div>
+        <div class="quick"><button type="button" class="choice" data-d="0">${L('आज', 'Today')}</button><button type="button" class="choice" data-d="1">${L('कल', 'Yesterday')}</button></div>
         <div class="field-error" id="e-date"></div></div>
-      <div class="step"><div class="q"><span class="num">5</span>कैसे दिया? <small>Paid by</small></div>
-        <div class="choices small">${MODES.map(m => `<button type="button" class="choice" data-mode="${m.key}" aria-pressed="${m.key === 'CASH'}">${m.hi}<br><small>${m.en}</small></button>`).join('')}</div></div>
-      <div class="step"><label for="note"><span class="num">6</span>कोई जानकारी? <small>Note (optional)</small></label>
-        <textarea id="note" placeholder="जैसे: सीमेंट के 10 बैग"></textarea></div>
+      <div class="step"><div class="q"><span class="num">5</span>${L('कैसे दिया?', 'Paid by')}</div>
+        <div class="choices small">${MODES.map(m => `<button type="button" class="choice" data-mode="${m.key}" aria-pressed="${m.key === 'CASH'}">${modeLabel(m)}</button>`).join('')}</div></div>
+      <div class="step"><label for="note"><span class="num">6</span>${L('कोई जानकारी?', 'Note (optional)')}</label>
+        <textarea id="note" placeholder="${L('जैसे: सीमेंट के 10 बैग', 'e.g. 10 bags of cement')}"></textarea></div>
       <div id="bottom"></div>
-      <button class="btn green big" id="save" type="button">💾 खर्च सेव करें <span class="sub">SAVE EXPENSE</span></button>`;
+      <button class="btn green big" id="save" type="button">💾 ${L('खर्च सेव करें', 'SAVE EXPENSE')}</button>`;
 
     const $ = id => document.getElementById(id);
     const setErr = (id, text) => { $(id).textContent = text || ''; $(id).parentElement.classList.toggle('bad', !!text); };
@@ -493,7 +511,7 @@
       if (!$('ltotal')) return;
       const hiddenSel = document.querySelectorAll('#llist .lab-row.on[hidden]').length;
       $('ltotal').textContent = money(labTotal() / 100);
-      $('lcount').textContent = lab.on.size ? `(${lab.on.size} चुने${hiddenSel ? ` · ${hiddenSel} खोज में छिपे` : ''})` : '';
+      $('lcount').textContent = lab.on.size ? `(${lab.on.size} ${L('चुने', 'selected')}${hiddenSel ? ` · ${hiddenSel} ${L('खोज में छिपे', 'hidden by search')}` : ''})` : '';
     }
     // Search only hides rows; it never clears a selection or an amount.
     function labFilter() {
@@ -508,33 +526,33 @@
         <div class="lab-row ${lab.on.has(r.labour) ? 'on' : ''}" data-id="${r.labour}" data-name="${esc((r.name + ' ' + r.mobile).toLowerCase())}">
           <label class="lab-pick"><input type="checkbox" class="lab-chk" ${lab.on.has(r.labour) ? 'checked' : ''}>
             <span class="lab-name">${esc(r.name)}${r.type ? ` <small>${esc(r.type)}</small>` : ''}
-              ${r.is_active ? '' : '<span class="pill warn">काम बंद</span>'}
+              ${r.is_active ? '' : `<span class="pill warn">${L('काम बंद', 'Inactive')}</span>`}
               ${r.last_paid ? `<span class="lab-last">Last paid: ${shortDate(r.last_paid)}</span>` : ''}</span></label>
-          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0" aria-label="${esc(r.name)} राशि" value="${esc(lab.amt[r.labour] || '')}"></span>
-          ${r.is_active && can('canManageLabour') ? '<button type="button" class="lab-stop">काम बंद करें <small>Mark inactive</small></button>' : ''}
+          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0" aria-label="${esc(r.name)} ${L('राशि', 'amount')}" value="${esc(lab.amt[r.labour] || '')}"></span>
+          ${r.is_active && can('canManageLabour') ? `<button type="button" class="lab-stop">${L('काम बंद करें', 'Mark inactive')}</button>` : ''}
         </div>`).join('')
-        : '<div class="msg info">इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है। "नया मज़दूर" जोड़िए या पुराने मज़दूर दिखाइए.</div>';
+        : `<div class="msg info">${L('इस प्रोजेक्ट में अभी कोई चालू मज़दूर नहीं है। "नया मज़दूर" जोड़िए या पुराने मज़दूर दिखाइए.', 'No active labour on this project yet. Add a new labour, or show inactive ones.')}</div>`;
       labFilter();
     }
     function labModal(gen) {
       const box = document.createElement('div');
       box.className = 'modal';
-      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया मज़दूर" novalidate>
-        <h2 style="margin-top:0">➕ नया मज़दूर <small>Add Labour</small></h2>
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="${L('नया मज़दूर', 'Add Labour')}" novalidate>
+        <h2 style="margin-top:0">➕ ${L('नया मज़दूर', 'Add Labour')}</h2>
         <div id="m-err"></div>
         <div id="m-fields">
-          <label for="m-name">नाम / मिस्त्री <small>Name</small> *</label>
+          <label for="m-name">${L('नाम / मिस्त्री', 'Name')} *</label>
           <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
-          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <label for="m-mob">${L('मोबाइल नंबर', 'Mobile')} *</label>
           <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
-          <label for="m-type">काम का प्रकार <small>Type (optional)</small></label>
-          <input id="m-type" type="text" autocomplete="off" placeholder="जैसे: मिस्त्री, हेल्पर" enterkeyhint="next">
-          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <label for="m-type">${L('काम का प्रकार', 'Type (optional)')}</label>
+          <input id="m-type" type="text" autocomplete="off" placeholder="${L('जैसे: मिस्त्री, हेल्पर', 'e.g. Mason, Helper')}" enterkeyhint="next">
+          <label for="m-rem">${L('जानकारी', 'Remarks (optional)')}</label>
           <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
-          <button class="btn green" type="submit" id="m-save">💾 सेव करें <span class="sub">SAVE</span></button>
+          <button class="btn green" type="submit" id="m-save">💾 ${L('सेव करें', 'SAVE')}</button>
         </div>
         <div id="m-dup" hidden></div>
-        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+        <button class="btn line" type="button" id="m-cancel">${L('रद्द करें', 'Cancel')}</button>
       </form>`;
       document.body.appendChild(box);
       const m = id => box.querySelector('#' + id);
@@ -564,7 +582,7 @@
             lab.lists = {};            // the first load had failed: reload it, the new labour is included
             await drawLabour();
           }
-          if ($('lnote')) $('lnote').innerHTML = r.reused ? '<div class="msg info">यह मज़दूर पहले से था — इस प्रोजेक्ट में चालू कर दिया.</div>' : '';
+          if ($('lnote')) $('lnote').innerHTML = r.reused ? `<div class="msg info">${L('यह मज़दूर पहले से था — इस प्रोजेक्ट में चालू कर दिया.', 'This labour already existed — marked active on this project.')}</div>` : '';
           const row = document.querySelector(`#llist .lab-row[data-id="${r.labour}"]`);
           if (row) { row.scrollIntoView({ block: 'center' }); row.querySelector('.lab-a').focus(); }
         } catch (err) { console.error('after add labour', err); }
@@ -575,12 +593,12 @@
         m('m-fields').hidden = true;
         const dup = m('m-dup');
         dup.hidden = false;
-        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही मज़दूर है? <small>Is this the same person?</small></h2>` +
+        dup.innerHTML = `<h2 style="margin-top:0">${L('क्या यह वही मज़दूर है?', 'Is this the same person?')}</h2>` +
           cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
             <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
             <div class="muted">${c.last_paid ? 'Last paid: ' + shortDate(c.last_paid) : 'Never paid'}</div>
-            <button class="btn green" type="button" data-use="${c.labour}" style="margin-bottom:0">✔ यही है <span class="sub">Use this Labour</span></button></div>`).join('') +
-          `<button class="btn line" type="button" id="m-new">➕ अलग व्यक्ति है <span class="sub">Different Person</span></button>`;
+            <button class="btn green" type="button" data-use="${c.labour}" style="margin-bottom:0">✔ ${L('यही है', 'Use this Labour')}</button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ ${L('अलग व्यक्ति है', 'Different Person')}</button>`;
         dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_labour: Number(b.dataset.use) }));
         m('m-new').onclick = () => send({ confirm_new: true });
       }
@@ -588,8 +606,8 @@
       box.querySelector('form').onsubmit = async ev => {
         ev.preventDefault();
         const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
-        if (!name) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
-        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        if (!name) { m('m-err').innerHTML = errBox(L('कृपया नाम भरें.', 'Please enter a name.')); m('m-name').focus(); return; }
+        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox(L('कृपया सही मोबाइल नंबर भरें.', 'Please enter a valid mobile number.')); m('m-mob').focus(); return; }
         const send = async extra => {
           const btns = box.querySelectorAll('button');
           btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
@@ -614,34 +632,34 @@
     function contractorModal() {
       const box = document.createElement('div');
       box.className = 'modal';
-      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया ठेकेदार" novalidate>
-        <h2 style="margin-top:0" id="m-title">➕ नया ठेकेदार <small>Add Contractor</small></h2>
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="${L('नया ठेकेदार', 'Add Contractor')}" novalidate>
+        <h2 style="margin-top:0" id="m-title">➕ ${L('नया ठेकेदार', 'Add Contractor')}</h2>
         <div id="m-err"></div>
         <div id="m-fields">
-          <label for="m-name">नाम <small>Name</small> *</label>
+          <label for="m-name">${L('नाम', 'Name')} *</label>
           <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
-          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <label for="m-mob">${L('मोबाइल नंबर', 'Mobile')} *</label>
           <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
-          <label for="m-type">काम का प्रकार <small>Work Type (optional)</small></label>
-          <input id="m-type" type="text" autocomplete="off" placeholder="जैसे: RCC, बिजली, प्लंबिंग" enterkeyhint="next">
-          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <label for="m-type">${L('काम का प्रकार', 'Work Type (optional)')}</label>
+          <input id="m-type" type="text" autocomplete="off" placeholder="${L('जैसे: RCC, बिजली, प्लंबिंग', 'e.g. RCC, Electrical, Plumbing')}" enterkeyhint="next">
+          <label for="m-rem">${L('जानकारी', 'Remarks (optional)')}</label>
           <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
-          <button class="btn green" type="submit" id="m-save">➡ आगे <span class="sub">NEXT</span></button>
+          <button class="btn green" type="submit" id="m-save">➡ ${L('आगे', 'NEXT')}</button>
         </div>
         <div id="m-dup" hidden></div>
         <div id="m-contract" hidden>
-          <p class="muted">ठेकेदार: <b id="m-cname"></b></p>
-          <label for="c-work">काम का विवरण <small>Work Description</small> *</label>
-          <input id="c-work" type="text" autocomplete="off" autocapitalize="sentences" placeholder="जैसे: RCC + Structure" enterkeyhint="next">
-          <label for="c-amt">कुल ठेका राशि <small>Contract Amount</small> *</label>
+          <p class="muted">${L('ठेकेदार', 'Contractor')}: <b id="m-cname"></b></p>
+          <label for="c-work">${L('काम का विवरण', 'Work Description')} *</label>
+          <input id="c-work" type="text" autocomplete="off" autocapitalize="sentences" placeholder="${L('जैसे: RCC + Structure', 'e.g. RCC + Structure')}" enterkeyhint="next">
+          <label for="c-amt">${L('कुल ठेका राशि', 'Contract Amount')} *</label>
           <div class="rupee"><span>₹</span><input id="c-amt" type="text" inputmode="decimal" autocomplete="off" enterkeyhint="next" placeholder="0"></div>
-          <label for="c-date">ठेके की तारीख <small>Contract Date</small> *</label>
+          <label for="c-date">${L('ठेके की तारीख', 'Contract Date')} *</label>
           <input id="c-date" type="date" value="${today()}">
-          <label for="c-rem">जानकारी <small>Remarks (optional)</small></label>
+          <label for="c-rem">${L('जानकारी', 'Remarks (optional)')}</label>
           <input id="c-rem" type="text" autocomplete="off" enterkeyhint="done">
-          <button class="btn green" type="submit" id="c-save">💾 ठेका सेव करें <span class="sub">SAVE CONTRACT</span></button>
+          <button class="btn green" type="submit" id="c-save">💾 ${L('ठेका सेव करें', 'SAVE CONTRACT')}</button>
         </div>
-        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+        <button class="btn line" type="button" id="m-cancel">${L('रद्द करें', 'Cancel')}</button>
       </form>`;
       document.body.appendChild(box);
       const m = id => box.querySelector('#' + id);
@@ -661,9 +679,9 @@
       function contractStep(c) {
         contractor = c;
         m('m-fields').hidden = true; m('m-dup').hidden = true; m('m-contract').hidden = false;
-        m('m-title').innerHTML = '➕ नया ठेका <small>Add Contract</small>';
+        m('m-title').innerHTML = `➕ ${L('नया ठेका', 'Add Contract')}`;
         m('m-cname').textContent = c.name;
-        m('m-err').innerHTML = c.reused ? '<div class="msg info">यह ठेकेदार पहले से था — इसी को चुना है.</div>' : '';
+        m('m-err').innerHTML = c.reused ? `<div class="msg info">${L('यह ठेकेदार पहले से था — इसी को चुना है.', 'This contractor already existed — selected them.')}</div>` : '';
         m('c-work').focus();
       }
 
@@ -672,12 +690,12 @@
         m('m-fields').hidden = true;
         const dup = m('m-dup');
         dup.hidden = false;
-        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही Contractor है? <small>Is this the same contractor?</small></h2>` +
+        dup.innerHTML = `<h2 style="margin-top:0">${L('क्या यह वही Contractor है?', 'Is this the same contractor?')}</h2>` +
           cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
             <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
             ${c.work_type ? `<div class="muted">${esc(c.work_type)}</div>` : ''}
-            <button class="btn green" type="button" data-use="${c.contractor}" style="margin-bottom:0">✔ यही है <span class="sub">Use Existing Contractor</span></button></div>`).join('') +
-          `<button class="btn line" type="button" id="m-new">➕ अलग ठेकेदार है <span class="sub">Different Contractor</span></button>`;
+            <button class="btn green" type="button" data-use="${c.contractor}" style="margin-bottom:0">✔ ${L('यही है', 'Use Existing Contractor')}</button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ ${L('अलग ठेकेदार है', 'Different Contractor')}</button>`;
         dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_contractor: Number(b.dataset.use) }));
         m('m-new').onclick = () => send({ confirm_new: true });
       }
@@ -703,10 +721,10 @@
       async function saveContract() {
         const work = m('c-work').value.trim(), cents = paise(m('c-amt').value);
         const bad = (id, text) => { m('m-err').innerHTML = errBox(text); m(id).focus(); };
-        if (!work) return bad('c-work', 'कृपया काम का विवरण भरें.');
-        if (!(cents > 0)) return bad('c-amt', 'कृपया ठेका राशि भरें (0 से ज़्यादा).');
-        if (cents >= 1e12) return bad('c-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.');
-        if (!m('c-date').value) return bad('c-date', 'कृपया तारीख चुनिए.');
+        if (!work) return bad('c-work', L('कृपया काम का विवरण भरें.', 'Please enter the work description.'));
+        if (!(cents > 0)) return bad('c-amt', L('कृपया ठेका राशि भरें (0 से ज़्यादा).', 'Please enter a contract amount greater than zero.'));
+        if (cents >= 1e12) return bad('c-amt', L('राशि बहुत बड़ी है। कृपया जाँच लें.', 'That amount is too large. Please check it.'));
+        if (!m('c-date').value) return bad('c-date', L('कृपया तारीख चुनिए.', 'Please choose a date.'));
         const btns = box.querySelectorAll('button');
         btns.forEach(b => { if (b.id !== 'm-cancel') b.disabled = true; });
         m('m-err').innerHTML = '';
@@ -736,8 +754,8 @@
         ev.preventDefault();
         if (contractor) return saveContract();
         const name = m('m-name').value.trim(), mobile = m('m-mob').value.trim();
-        if (!name) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
-        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        if (!name) { m('m-err').innerHTML = errBox(L('कृपया नाम भरें.', 'Please enter a name.')); m('m-name').focus(); return; }
+        if (mobile.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox(L('कृपया सही मोबाइल नंबर भरें.', 'Please enter a valid mobile number.')); m('m-mob').focus(); return; }
         saveContractor({});
       };
     }
@@ -751,9 +769,9 @@
       return `<button type="button" class="card pick" data-contract="${c.id}">
         <b style="font-size:1.3rem">${esc(c.contractor_name)}</b>
         ${c.work_description ? `<div class="muted">${esc(c.work_description)}</div>` : ''}
-        <div class="row"><span class="muted">पूरा काम <small>Contract</small></span><span>${money(c.contract_amount)}</span></div>
-        <div class="row"><span class="muted">अब तक दिया <small>Paid</small></span><span>${money(c.paid_amount)}</span></div>
-        <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'} <small>Balance</small></b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>
+        <div class="row"><span class="muted">${L('पूरा काम', 'Contract')}</span><span>${money(c.contract_amount)}</span></div>
+        <div class="row"><span class="muted">${L('अब तक दिया', 'Paid')}</span><span>${money(c.paid_amount)}</span></div>
+        <div class="row"><b>${bal < 0 ? L('ज़्यादा दिया', 'Overpaid') : L('देना बाकी', 'Balance due')}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>
       </button>`;
     };
 
@@ -761,22 +779,22 @@
     function supplierModal() {
       const box = document.createElement('div');
       box.className = 'modal';
-      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="नया Supplier" novalidate>
-        <h2 style="margin-top:0">➕ नया Supplier <small>Add Supplier</small></h2>
+      box.innerHTML = `<form class="modal-box" role="dialog" aria-modal="true" aria-label="${L('नया Supplier', 'Add Supplier')}" novalidate>
+        <h2 style="margin-top:0">➕ ${L('नया Supplier', 'Add Supplier')}</h2>
         <div id="m-err"></div>
         <div id="m-fields">
-          <label for="m-name">नाम <small>Supplier Name</small> *</label>
+          <label for="m-name">${L('नाम', 'Supplier Name')} *</label>
           <input id="m-name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next">
-          <label for="m-mob">मोबाइल नंबर <small>Mobile</small> *</label>
+          <label for="m-mob">${L('मोबाइल नंबर', 'Mobile')} *</label>
           <input id="m-mob" type="text" inputmode="tel" autocomplete="off" maxlength="15" enterkeyhint="next">
-          <label for="m-type">सामान का प्रकार <small>Supplier Type (optional)</small></label>
-          <select id="m-type"><option value="">— चुनिए —</option>${SUPPLIER_TYPES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
-          <label for="m-rem">जानकारी <small>Remarks (optional)</small></label>
+          <label for="m-type">${L('सामान का प्रकार', 'Supplier Type (optional)')}</label>
+          <select id="m-type"><option value="">${L('— चुनिए —', '— Choose —')}</option>${SUPPLIER_TYPES.map(t => `<option value="${esc(t)}">${esc(t)}</option>`).join('')}</select>
+          <label for="m-rem">${L('जानकारी', 'Remarks (optional)')}</label>
           <input id="m-rem" type="text" autocomplete="off" enterkeyhint="done">
-          <button class="btn green" type="submit" id="m-save">💾 सेव करें <span class="sub">SAVE</span></button>
+          <button class="btn green" type="submit" id="m-save">💾 ${L('सेव करें', 'SAVE')}</button>
         </div>
         <div id="m-dup" hidden></div>
-        <button class="btn line" type="button" id="m-cancel">रद्द करें <span class="sub">Cancel</span></button>
+        <button class="btn line" type="button" id="m-cancel">${L('रद्द करें', 'Cancel')}</button>
       </form>`;
       document.body.appendChild(box);
       const m = id => box.querySelector('#' + id);
@@ -796,12 +814,12 @@
         m('m-fields').hidden = true;
         const dup = m('m-dup');
         dup.hidden = false;
-        dup.innerHTML = `<h2 style="margin-top:0">क्या यह वही Supplier है? <small>Is this the same supplier?</small></h2>` +
+        dup.innerHTML = `<h2 style="margin-top:0">${L('क्या यह वही Supplier है?', 'Is this the same supplier?')}</h2>` +
           cands.map(c => `<div class="card"><b>${esc(c.name)}</b>
             <div class="muted">Mobile: ${esc(c.mobile_masked || '—')}</div>
             ${c.supplier_type ? `<div class="muted">${esc(c.supplier_type)}</div>` : ''}
-            <button class="btn green" type="button" data-use="${c.supplier}" style="margin-bottom:0">✔ यही है <span class="sub">Use Existing</span></button></div>`).join('') +
-          `<button class="btn line" type="button" id="m-new">➕ अलग Supplier है <span class="sub">Different Supplier</span></button>`;
+            <button class="btn green" type="button" data-use="${c.supplier}" style="margin-bottom:0">✔ ${L('यही है', 'Use Existing')}</button></div>`).join('') +
+          `<button class="btn line" type="button" id="m-new">➕ ${L('अलग Supplier है', 'Different Supplier')}</button>`;
         dup.querySelectorAll('[data-use]').forEach(b => b.onclick = () => send({ use_supplier: Number(b.dataset.use) }));
         m('m-new').onclick = () => send({ confirm_new: true });
       }
@@ -837,8 +855,8 @@
 
       box.querySelector('form').onsubmit = ev => {
         ev.preventDefault();
-        if (!m('m-name').value.trim()) { m('m-err').innerHTML = errBox('कृपया नाम भरें.'); m('m-name').focus(); return; }
-        if (m('m-mob').value.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox('कृपया सही मोबाइल नंबर भरें.'); m('m-mob').focus(); return; }
+        if (!m('m-name').value.trim()) { m('m-err').innerHTML = errBox(L('कृपया नाम भरें.', 'Please enter a name.')); m('m-name').focus(); return; }
+        if (m('m-mob').value.replace(/\D/g, '').length < 10) { m('m-err').innerHTML = errBox(L('कृपया सही मोबाइल नंबर भरें.', 'Please enter a valid mobile number.')); m('m-mob').focus(); return; }
         send({});
       };
     }
@@ -851,15 +869,15 @@
     async function drawLabour() {
       const gen = ++labGen;
       $('s-who').innerHTML = `
-        <div class="q"><span class="num">3</span>किस मज़दूर को दिया? <small>Labour Payments</small> <small id="lcount"></small></div>
+        <div class="q"><span class="num">3</span>${L('किस मज़दूर को दिया?', 'Labour Payments')} <small id="lcount"></small></div>
         <div class="lab-bar">
-          <input id="lq" type="text" autocomplete="off" enterkeyhint="search" placeholder="🔍 मज़दूर खोजिए (Search Labour)" value="${esc(lab.q)}">
-          ${can('canManageLabour') ? '<button type="button" class="btn line" id="ladd">➕ नया <span class="sub">Add Labour</span></button>' : ''}
+          <input id="lq" type="text" autocomplete="off" enterkeyhint="search" placeholder="🔍 ${L('मज़दूर खोजिए', 'Search Labour')}" value="${esc(lab.q)}">
+          ${can('canManageLabour') ? `<button type="button" class="btn line" id="ladd">➕ ${L('नया', 'Add Labour')}</button>` : ''}
         </div>
-        <label class="lab-inact"><input type="checkbox" id="linact" ${lab.showInactive ? 'checked' : ''}> पुराने / काम बंद मज़दूर भी दिखाएँ <small>Show Inactive</small></label>
+        <label class="lab-inact"><input type="checkbox" id="linact" ${lab.showInactive ? 'checked' : ''}> ${L('पुराने / काम बंद मज़दूर भी दिखाएँ', 'Show Inactive')}</label>
         <div id="lnote"></div>
-        <div id="llist"><div class="spinner">⏳ रुकिए...</div></div>
-        <div class="card row lab-total"><span>कुल मज़दूरी <small>Total Labour Payment</small></span><span class="amount" id="ltotal">${money(0)}</span></div>
+        <div id="llist"><div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div></div>
+        <div class="card row lab-total"><span>${L('कुल मज़दूरी', 'Total Labour Payment')}</span><span class="amount" id="ltotal">${money(0)}</span></div>
         <div><div class="field-error" id="e-lab"></div></div>`;
       $('lq').oninput = e => { lab.q = e.target.value; labFilter(); };
       if ($('ladd')) $('ladd').onclick = () => labModal(gen);
@@ -900,7 +918,7 @@
         if (!btn) return;
         const row = btn.closest('.lab-row'), id = Number(row.dataset.id);
         const link = (lab.lists.active || []).find(x => x.labour === id);
-        if (!link || !confirm(`${link.name} को इस प्रोजेक्ट में "काम बंद" करें?\nपुराना हिसाब बना रहेगा.`)) return;
+        if (!link || !confirm(L(`${link.name} को इस प्रोजेक्ट में "काम बंद" करें?\nपुराना हिसाब बना रहेगा.`, `Mark ${link.name} inactive on this project?\nPast records will stay.`))) return;
         try {
           await api(`project-labour/${link.id}/set-active/`, { method: 'POST', body: { is_active: false } });
           lab.lists.active = lab.lists.active.filter(x => x !== link);
@@ -923,29 +941,29 @@
       if (cat !== 'LABOUR') labGen++;         // stop any labour load still in flight
       if (cat === 'LABOUR') { f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = ''; drawLabour(); return; }
       if (!cat) {
-        html = '<div class="q"><span class="num">3</span>किसको दिया? <small>Name</small></div><p class="muted">पहले ऊपर बताइए कि किस चीज़ का खर्च है.</p>';
+        html = `<div class="q"><span class="num">3</span>${L('किसको दिया?', 'Name')}</div><p class="muted">${L('पहले ऊपर बताइए कि किस चीज़ का खर्च है.', 'First choose above what this expense is for.')}</p>`;
       } else if (cat === 'CONTRACTOR') {
-        html = `<div class="q"><span class="num">3</span>किस ठेकेदार को दिया? <small>Contractor</small></div>
-          ${can('canManageContractors') ? '<button class="btn line" type="button" id="cadd">➕ नया ठेकेदार <span class="sub">Add Contractor</span></button>' : ''}` +
+        html = `<div class="q"><span class="num">3</span>${L('किस ठेकेदार को दिया?', 'Contractor')}</div>
+          ${can('canManageContractors') ? `<button class="btn line" type="button" id="cadd">➕ ${L('नया ठेकेदार', 'Add Contractor')}</button>` : ''}` +
           (names.contracts.length
             ? names.contracts.map(contractCard).join('')
-            : '<div class="msg info">इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। "नया ठेकेदार" दबाइए.</div>') +
+            : `<div class="msg info">${L('इस प्रोजेक्ट में अभी कोई ठेकेदार नहीं जुड़ा है। "नया ठेकेदार" दबाइए.', 'No contractor is linked to this project yet. Tap "Add Contractor".')}</div>`) +
           '<div class="field-error" id="e-who"></div>';
       } else if (cat === 'SUPPLIER') {
-        html = `<div class="q"><span class="num">3</span>किस सप्लायर को दिया? <small>Supplier</small></div>
-          ${can('canManageSuppliers') ? '<button class="btn line" type="button" id="sadd">➕ नया Supplier <span class="sub">Add Supplier</span></button>' : ''}` +
+        html = `<div class="q"><span class="num">3</span>${L('किस सप्लायर को दिया?', 'Supplier')}</div>
+          ${can('canManageSuppliers') ? `<button class="btn line" type="button" id="sadd">➕ ${L('नया Supplier', 'Add Supplier')}</button>` : ''}` +
           (names.suppliers.length
-            ? `<select id="supplier"><option value="">— सप्लायर चुनिए —</option>${names.suppliers.map(x => `<option value="${x.id}">${esc(x.name)}${x.supplier_type ? ' — ' + esc(x.supplier_type) : ''}</option>`).join('')}</select>`
-            : '<div class="msg info">अभी कोई सप्लायर नहीं है। "नया Supplier" दबाइए.</div>') +
-          `<label for="material" style="margin-top:18px;display:block;font-weight:700">क्या सामान लिया? <small>Material / Item</small> *</label>
-          <input id="material" type="text" autocomplete="off" autocapitalize="sentences" placeholder="जैसे: सीमेंट, रेत" enterkeyhint="next">
+            ? `<select id="supplier"><option value="">${L('— सप्लायर चुनिए —', '— Choose a supplier —')}</option>${names.suppliers.map(x => `<option value="${x.id}">${esc(x.name)}${x.supplier_type ? ' — ' + esc(x.supplier_type) : ''}</option>`).join('')}</select>`
+            : `<div class="msg info">${L('अभी कोई सप्लायर नहीं है। "नया Supplier" दबाइए.', 'No supplier yet. Tap "Add Supplier".')}</div>`) +
+          `<label for="material" style="margin-top:18px;display:block;font-weight:700">${L('क्या सामान लिया?', 'Material / Item')} *</label>
+          <input id="material" type="text" autocomplete="off" autocapitalize="sentences" placeholder="${L('जैसे: सीमेंट, रेत', 'e.g. Cement, Sand')}" enterkeyhint="next">
           <div class="field-error" id="e-who"></div>`;
       } else {
-        const label = cat === 'LABOUR' ? 'किस मज़दूर को दिया?' : cat === 'SUPPLIER' ? 'किस सप्लायर को दिया?' : 'किसको दिया?';
-        html = `<label for="name"><span class="num">3</span>${label} <small>Name</small></label>
-          <input id="name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next" placeholder="नाम लिखिए">
+        const label = cat === 'LABOUR' ? L('किस मज़दूर को दिया?', 'Name') : cat === 'SUPPLIER' ? L('किस सप्लायर को दिया?', 'Name') : L('किसको दिया?', 'Name');
+        html = `<label for="name"><span class="num">3</span>${label}</label>
+          <input id="name" type="text" autocomplete="off" autocapitalize="words" enterkeyhint="next" placeholder="${L('नाम लिखिए', 'Enter name')}">
           <div class="suggest" id="sug"></div><div class="hint" id="newhint"></div><div class="field-error" id="e-who"></div>` +
-          (cat === 'MISCELLANEOUS' ? `<label for="what" style="margin-top:18px;display:block;font-weight:700">किस काम का? <small>(optional, जैसे: चाय, ट्रांसपोर्ट)</small></label><input id="what" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="next">` : '');
+          (cat === 'MISCELLANEOUS' ? `<label for="what" style="margin-top:18px;display:block;font-weight:700">${L('किस काम का?', '(optional, e.g. Tea, Transport)')}</label><input id="what" type="text" autocomplete="off" autocapitalize="sentences" enterkeyhint="next">` : '');
       }
       $('s-who').innerHTML = html;
       f.name = ''; f.contractId = ''; f.supplierId = ''; f.what = '';
@@ -967,7 +985,7 @@
       const matches = list.filter(n => typed && n.toLowerCase().includes(typed) && n.toLowerCase() !== typed).slice(0, 5);
       $('sug').innerHTML = matches.map(n => `<button type="button">${esc(n)}</button>`).join('');
       $('sug').querySelectorAll('button').forEach(b => b.onclick = () => { f.name = b.textContent; $('name').value = f.name; drawSuggest(); });
-      $('newhint').textContent = f.cat !== 'MISCELLANEOUS' && typed && !exact ? '✚ यह नया नाम जुड़ जाएगा.' : '';
+      $('newhint').textContent = f.cat !== 'MISCELLANEOUS' && typed && !exact ? `✚ ${L('यह नया नाम जुड़ जाएगा.', 'This new name will be added.')}` : '';
     }
 
     document.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => {
@@ -993,26 +1011,26 @@
     function firstError() {
       const amt = Number(f.amount);
       const fail = (id, text, scrollTo) => { setErr(id, text); $(scrollTo).scrollIntoView({ behavior: 'smooth', block: 'center' }); return true; };
-      if (!f.ownerId) return fail('e-owner', 'कृपया मालिक चुनिए.', 's-owner');
-      if (!f.cat) return fail('e-cat', 'कृपया बताइए किस चीज़ का खर्च है.', 's-cat');
+      if (!f.ownerId) return fail('e-owner', L('कृपया मालिक चुनिए.', 'Please choose an owner.'), 's-owner');
+      if (!f.cat) return fail('e-cat', L('कृपया बताइए किस चीज़ का खर्च है.', 'Please choose what this expense is for.'), 's-cat');
       if (f.cat === 'LABOUR') {
-        if (!lab.on.size) return fail('e-lab', 'कृपया कम से कम एक मज़दूर चुनिए.', 's-who');
+        if (!lab.on.size) return fail('e-lab', L('कृपया कम से कम एक मज़दूर चुनिए.', 'Please choose at least one labour.'), 's-who');
         const bad = [...lab.on].filter(id => !(paise(lab.amt[id]) > 0));
         $('llist').querySelectorAll('.lab-row').forEach(r => r.classList.toggle('bad-row', bad.includes(Number(r.dataset.id))));
         if (bad.length) {
           $('llist').querySelector('.bad-row').scrollIntoView({ behavior: 'smooth', block: 'center' });
-          setErr('e-lab', 'चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).');
+          setErr('e-lab', L('चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).', 'Enter an amount greater than zero for every selected labour.'));
           return true;
         }
       } else {
-        if (!f.amount || !(amt > 0)) return fail('e-amt', 'कृपया राशि भरें.', 's-amt');
-        if (amt >= 1e10) return fail('e-amt', 'राशि बहुत बड़ी है। कृपया जाँच लें.', 's-amt');
+        if (!f.amount || !(amt > 0)) return fail('e-amt', L('कृपया राशि भरें.', 'Please enter an amount.'), 's-amt');
+        if (amt >= 1e10) return fail('e-amt', L('राशि बहुत बड़ी है। कृपया जाँच लें.', 'That amount is too large. Please check it.'), 's-amt');
       }
-      if (f.cat === 'CONTRACTOR' && !f.contractId) return fail('e-who', 'कृपया ठेकेदार चुनिए.', 's-who');
-      if (f.cat === 'SUPPLIER' && !f.supplierId) return fail('e-who', 'कृपया सप्लायर चुनिए.', 's-who');
-      if (f.cat === 'SUPPLIER' && !f.what.trim()) return fail('e-who', 'कृपया बताइए क्या सामान लिया.', 's-who');
-      if (f.cat === 'MISCELLANEOUS' && !f.name.trim()) return fail('e-who', 'कृपया नाम भरें.', 's-who');
-      if (!$('date').value) return fail('e-date', 'कृपया तारीख चुनिए.', 's-date');
+      if (f.cat === 'CONTRACTOR' && !f.contractId) return fail('e-who', L('कृपया ठेकेदार चुनिए.', 'Please choose a contractor.'), 's-who');
+      if (f.cat === 'SUPPLIER' && !f.supplierId) return fail('e-who', L('कृपया सप्लायर चुनिए.', 'Please choose a supplier.'), 's-who');
+      if (f.cat === 'SUPPLIER' && !f.what.trim()) return fail('e-who', L('कृपया बताइए क्या सामान लिया.', 'Please enter what was bought.'), 's-who');
+      if (f.cat === 'MISCELLANEOUS' && !f.name.trim()) return fail('e-who', L('कृपया नाम भरें.', 'Please enter a name.'), 's-who');
+      if (!$('date').value) return fail('e-date', L('कृपया तारीख चुनिए.', 'Please choose a date.'), 's-date');
       return false;
     }
 
@@ -1020,7 +1038,7 @@
       if (saving) return;
       $('top').innerHTML = ''; $('bottom').innerHTML = '';
       if (firstError()) return;
-      saving = true; $('save').disabled = true; $('save').firstChild.textContent = '⏳ सेव हो रहा है... ';
+      saving = true; $('save').disabled = true; $('save').firstChild.textContent = `⏳ ${L('सेव हो रहा है...', 'Saving...')} `;
       try {
         if (f.cat === 'LABOUR') {
           const picked = labRows().filter(r => lab.on.has(r.labour));
@@ -1062,8 +1080,8 @@
         sessionStorage.setItem('justSaved', JSON.stringify({ amount: body.amount, who: f.cat === 'CONTRACTOR' ? names.contracts.find(c => String(c.id) === f.contractId).contractor_name : f.cat === 'SUPPLIER' ? names.suppliers.find(x => String(x.id) === f.supplierId).name : f.name.trim() }));
         location.hash = '#/done';
       } catch (e) {
-        saving = false; $('save').disabled = false; $('save').firstChild.textContent = '💾 खर्च सेव करें ';
-        $('bottom').innerHTML = errBox(serverMsg(e) || friendly(e));
+        saving = false; $('save').disabled = false; $('save').firstChild.textContent = `💾 ${L('खर्च सेव करें', 'SAVE EXPENSE')} `;
+        $('bottom').innerHTML = errBox(serverMsg(e) || friendly(e, MSG.noPermissionAdd));
         $('bottom').scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     };
@@ -1076,25 +1094,25 @@
     $view.innerHTML = `
       <div class="success"><div class="tick">✅</div><h1>${MSG.saved}</h1>
         ${info ? `<div class="card"><div class="amount">${money(info.amount)}</div><div class="muted">${esc(info.who)}</div></div>` : ''}</div>
-      <a class="btn green big" href="#/add">➕ एक और खर्च डालें <span class="sub">Add Another</span></a>
-      ${can('canViewExpenses') ? '<a class="btn line" href="#/list">📋 खर्च देखें <span class="sub">View Expenses</span></a>' : ''}
-      <a class="btn line" href="#/home">🏠 होम पर जाएँ <span class="sub">Home</span></a>`;
+      <a class="btn green big" href="#/add">➕ ${L('एक और खर्च डालें', 'Add Another')}</a>
+      ${can('canViewExpenses') ? `<a class="btn line" href="#/list">📋 ${L('खर्च देखें', 'View Expenses')}</a>` : ''}
+      <a class="btn line" href="#/home">🏠 ${L('होम पर जाएँ', 'Home')}</a>`;
   }
 
   // ----- Supplier bills: a separate action on an expense that is already saved (never part of Save Expense) -----
   const BILL_EXT = ['jpg', 'jpeg', 'png', 'pdf'], BILL_MAX = 5 * 1024 * 1024;   // the server enforces the same rules
   const billMsgs = {                                                             // shown under a card after an action
-    403: 'आपको इसकी अनुमति नहीं है. (You do not have permission.)',
-    404: 'बिल नहीं मिला. (Bill not found.)',
-    409: 'इस खर्च पर बिल पहले से लगा है. (This expense already has a bill.)',
-    502: 'बिल सेव नहीं हो सका। कृपया दोबारा कोशिश करें. (Could not store the bill. Try again.)',
-    503: 'बिल स्टोरेज अभी चालू नहीं है। कृपया एडमिन से संपर्क करें. (Bill storage is not set up yet.)',
+    get 403() { return L('आपको इसकी अनुमति नहीं है.', 'You do not have permission.'); },
+    get 404() { return L('बिल नहीं मिला.', 'Bill not found.'); },
+    get 409() { return L('इस खर्च पर बिल पहले से लगा है.', 'This expense already has a bill.'); },
+    get 502() { return L('बिल सेव नहीं हो सका। कृपया दोबारा कोशिश करें.', 'Could not store the bill. Try again.'); },
+    get 503() { return L('बिल स्टोरेज अभी चालू नहीं है। कृपया एडमिन से संपर्क करें.', 'Bill storage is not set up yet. Please contact the administrator.'); },
   };
   const billErr = e => (e && e.kind === 'network' ? MSG.network : e && e.status === 400 && serverMsg(e) ? serverMsg(e) : billMsgs[e && e.status] || MSG.problem);
   function billFileProblem(file) {
-    if (!BILL_EXT.includes((file.name.split('.').pop() || '').toLowerCase())) return 'सिर्फ़ JPG, PNG या PDF फ़ाइल चुनिए. (Only JPG, PNG or PDF.)';
-    if (!file.size) return 'फ़ाइल खाली है. (The file is empty.)';
-    if (file.size > BILL_MAX) return 'फ़ाइल 5 MB से बड़ी है. (The file is larger than 5 MB.)';
+    if (!BILL_EXT.includes((file.name.split('.').pop() || '').toLowerCase())) return L('सिर्फ़ JPG, PNG या PDF फ़ाइल चुनिए.', 'Only JPG, PNG or PDF files are allowed.');
+    if (!file.size) return L('फ़ाइल खाली है.', 'The file is empty.');
+    if (file.size > BILL_MAX) return L('फ़ाइल 5 MB से बड़ी है.', 'The file is larger than 5 MB.');
     return '';
   }
   // The shared api() sends JSON; a file needs multipart, so this is its own small call (same auth and error handling).
@@ -1114,11 +1132,11 @@
   // The signed link is short-lived and never stored. The tab is opened inside the tap so the browser allows it.
   async function openBill(id, box) {
     const tab = window.open('', '_blank');
-    if (tab) { try { tab.opener = null; tab.document.write('<p style="font:20px sans-serif;padding:24px">⏳ बिल खुल रहा है...</p>'); } catch (e) { /* ignore */ } }
+    if (tab) { try { tab.opener = null; tab.document.write(`<p style="font:20px sans-serif;padding:24px">⏳ ${L('बिल खुल रहा है...', 'Opening bill...')}</p>`); } catch (e) { /* ignore */ } }
     try {
       const r = await api(`expense-transactions/${id}/bill/`);
       if (tab) tab.location.href = r.url;
-      else box.innerHTML = `<a class="btn line" href="${esc(r.url)}" target="_blank" rel="noopener">📄 बिल खोलें <span class="sub">Open bill</span></a>`;
+      else box.innerHTML = `<a class="btn line" href="${esc(r.url)}" target="_blank" rel="noopener">📄 ${L('बिल खोलें', 'Open bill')}</a>`;
     } catch (e) {
       if (tab) tab.close();
       box.innerHTML = errBox(billErr(e));
@@ -1150,24 +1168,24 @@
     card.querySelector('.row-actions').hidden = true;
     const box = card.querySelector('.act-msg');
     box.innerHTML = `<form class="edit-form" novalidate>
-      <label>तारीख <small>Date</small></label><input name="expense_date" type="date" value="${esc(row.expense_date)}">
-      <label>रकम <small>Amount</small></label><input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" value="${esc(row.amount)}">
-      <label>कैसे दिया <small>Payment mode</small></label>
-      <select name="payment_mode">${MODES.map(m => `<option value="${m.key}" ${m.key === row.payment_mode ? 'selected' : ''}>${m.hi} · ${m.en}</option>`).join('')}</select>
-      ${isMisc ? `<label>किसे दिया <small>Paid to</small></label><input name="payee_name" type="text" value="${esc(row.payee_name || '')}">` : ''}
-      ${isSupplier ? `<label>सामान <small>Material</small></label><input name="description" type="text" value="${esc(row.description || '')}">` : ''}
-      <label>रेफ़रेंस नंबर <small>Reference no</small></label><input name="reference_no" type="text" value="${esc(row.reference_no || '')}">
-      <label>नोट <small>Remarks</small></label><input name="remarks" type="text" value="${esc(row.remarks || '')}">
+      <label>${L('तारीख', 'Date')}</label><input name="expense_date" type="date" value="${esc(row.expense_date)}">
+      <label>${L('रकम', 'Amount')}</label><input name="amount" type="number" inputmode="decimal" step="0.01" min="0.01" value="${esc(row.amount)}">
+      <label>${L('कैसे दिया', 'Payment mode')}</label>
+      <select name="payment_mode">${MODES.map(m => `<option value="${m.key}" ${m.key === row.payment_mode ? 'selected' : ''}>${modeLabel(m)}</option>`).join('')}</select>
+      ${isMisc ? `<label>${L('किसे दिया', 'Paid to')}</label><input name="payee_name" type="text" value="${esc(row.payee_name || '')}">` : ''}
+      ${isSupplier ? `<label>${L('सामान', 'Material')}</label><input name="description" type="text" value="${esc(row.description || '')}">` : ''}
+      <label>${L('रेफ़रेंस नंबर', 'Reference no')}</label><input name="reference_no" type="text" value="${esc(row.reference_no || '')}">
+      <label>${L('नोट', 'Remarks')}</label><input name="remarks" type="text" value="${esc(row.remarks || '')}">
       <div class="edit-msg"></div>
-      <button class="btn green" type="submit">💾 सेव करें <span class="sub">SAVE</span></button>
-      <button class="btn line" type="button" data-cancel>Cancel</button></form>`;
+      <button class="btn green" type="submit">💾 ${L('सेव करें', 'SAVE')}</button>
+      <button class="btn line" type="button" data-cancel>${L('रद्द करें', 'Cancel')}</button></form>`;
     const f = box.querySelector('form'), msg = f.querySelector('.edit-msg');
     f.querySelector('[data-cancel]').onclick = () => { box.innerHTML = ''; card.querySelector('.row-actions').hidden = false; };
     f.onsubmit = async ev => {
       ev.preventDefault();
       const v = n => f.elements[n] && f.elements[n].value.trim();
-      if (!(Number(v('amount')) > 0)) { msg.innerHTML = errBox('सही रकम भरें.'); return; }
-      if (!v('expense_date')) { msg.innerHTML = errBox('तारीख चुनें.'); return; }
+      if (!(Number(v('amount')) > 0)) { msg.innerHTML = errBox(L('सही रकम भरें.', 'Please enter a valid amount.')); return; }
+      if (!v('expense_date')) { msg.innerHTML = errBox(L('तारीख चुनें.', 'Please choose a date.')); return; }
       const body = { expense_date: v('expense_date'), amount: v('amount'), payment_mode: v('payment_mode'),
         reference_no: v('reference_no') || null, remarks: v('remarks') || null };
       if (isMisc) body.payee_name = v('payee_name');
@@ -1191,13 +1209,13 @@
         loadNames(true),
         allRegisterRows(params),
       ]);
-    } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
     const seen = new Set(viewableCats().map(c => c.key));
     rows = rows.filter(r => seen.has(r.expense_category));
     if (!seen.has(listState.cat)) listState.cat = '';
 
     const personKey = ['labour', 'supplier', 'contractor', 'contractor_contract'].find(k => params.get(k));
-    const personNote = personKey ? '<div class="msg info">एक व्यक्ति का पूरा हिसाब <small>Showing one person only</small> · <a href="#/list">सब देखें / Show all</a></div>' : '';
+    const personNote = personKey ? `<div class="msg info">${L('एक व्यक्ति का पूरा हिसाब', 'Showing one person only')} · <a href="#/list">${L('सब देखें', 'Show all')}</a></div>` : '';
 
     const nameOf = r => {
       if (r.labour) return (names.labour.find(x => x.id === r.labour) || {}).name;
@@ -1225,26 +1243,26 @@
       const total = shown.reduce((s, r) => s + Number(r.amount), 0);
       const chip = (key, label) => `<button type="button" class="choice" data-c="${key}" aria-pressed="${listState.cat === key}">${label}</button>`;
       $view.innerHTML = `
-        <h1>📋 खर्च देखें <small>View Expenses</small></h1>
+        <h1>📋 ${L('खर्च देखें', 'View Expenses')}</h1>
         ${personNote}
-        <div class="chips">${chip('', 'सब')}${viewableCats().map(c => chip(c.key, `${c.icon} ${c.hi}`)).join('')}</div>
-        <div class="card"><div class="row"><span>कुल खर्च <small>Total</small></span><span class="amount">${money(total)}</span></div></div>` +
+        <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
+        <div class="card"><div class="row"><span>${L('कुल खर्च', 'Total')}</span><span class="amount">${money(total)}</span></div></div>` +
         (shown.length ? shown.slice(0, listState.shown).map(r => `
           <div class="card item" data-id="${r.id}">
             <div class="row"><span class="who">${esc(nameOf(r) || '—')}</span><span class="amount">${money(r.amount)}</span></div>
-            <div class="meta">${CAT[r.expense_category].icon} ${CAT[r.expense_category].hi}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
+            <div class="meta">${CAT[r.expense_category].icon} ${catLabel(CAT[r.expense_category])}${r.expense_category === 'MISCELLANEOUS' && r.expense_type !== 'Other' ? ' · ' + esc(r.expense_type) : ''} · ${niceDate(r.expense_date)}</div>
             ${r.expense_category === 'SUPPLIER' && r.description ? `<div class="note">🧱 ${esc(r.description)}</div>` : ''}
             ${r.remarks ? `<div class="note">📝 ${esc(r.remarks)}</div>` : ''}
             ${billActions(r)}
-            ${can('canEditExpense') || can('canDeleteExpense') ? `<div class="row-actions">${can('canEditExpense') ? '<button type="button" class="btn line act act-edit">✏️ Edit</button>' : ''}${can('canDeleteExpense') ? '<button type="button" class="btn line danger act act-del">🗑 Delete</button>' : ''}</div>` : ''}
+            ${can('canEditExpense') || can('canDeleteExpense') ? `<div class="row-actions">${can('canEditExpense') ? `<button type="button" class="btn line act act-edit">✏️ ${L('बदलें', 'Edit')}</button>` : ''}${can('canDeleteExpense') ? `<button type="button" class="btn line danger act act-del">🗑 ${L('हटाएँ', 'Delete')}</button>` : ''}</div>` : ''}
             <div class="act-msg"></div>
-          </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>अभी कोई खर्च नहीं है.</p>${canAdd() ? '<a class="btn green" href="#/add">➕ खर्च डालें <span class="sub">Add Expense</span></a>' : ''}</div>`) +
-        (shown.length > listState.shown ? '<button type="button" class="btn line" id="more">⬇ और दिखाएँ <span class="sub">Show more</span></button>' : '');
+          </div>`).join('') : `<div class="empty"><div class="ico">📭</div><p>${L('अभी कोई खर्च नहीं है.', 'No expenses yet.')}</p>${canAdd() ? `<a class="btn green" href="#/add">➕ ${L('खर्च डालें', 'Add Expense')}</a>` : ''}</div>`) +
+        (shown.length > listState.shown ? `<button type="button" class="btn line" id="more">⬇ ${L('और दिखाएँ', 'Show more')}</button>` : '');
       const rowOf = b => rows.find(x => x.id === Number(b.closest('.card').dataset.id));
       $view.querySelectorAll('.act-del').forEach(b => b.onclick = () => {
         const row = rowOf(b), box = b.closest('.card').querySelector('.act-msg');
         if (!row) return;
-        confirmBox('यह खर्च हटाएँ? Delete this expense?', 'Delete', async () => {
+        confirmBox(L('यह खर्च हटाएँ?', 'Delete this expense?'), L('हटाएँ', 'Delete'), async () => {
           try {
             await api(`expense-transactions/${row.id}/cancel/`, { method: 'POST', body: { remarks: `Deleted by ${state.user.email || state.user.name}` } });
             rows = rows.filter(x => x.id !== row.id);
@@ -1265,11 +1283,11 @@
         const bad = billFileProblem(file);
         if (bad) { box.innerHTML = errBox(bad); return; }
         const btn = input.previousElementSibling;
-        btn.disabled = true; box.innerHTML = '<div class="msg info">⏳ बिल अपलोड हो रहा है... <small>Uploading</small></div>';
+        btn.disabled = true; box.innerHTML = `<div class="msg info">⏳ ${L('बिल अपलोड हो रहा है...', 'Uploading...')}</div>`;
         try {
           const saved = await uploadBill(id, file);
           row.has_bill = true; row.bill_filename = saved.bill_filename;
-          billNote[id] = '<div class="msg ok" role="status">✅ बिल लग गया. (Bill uploaded.)</div>';
+          billNote[id] = `<div class="msg ok" role="status">✅ ${L('बिल लग गया.', 'Bill uploaded.')}</div>`;
         } catch (e) {
           if (e.status === 409) { row.has_bill = true; billNote[id] = errBox(billErr(e)); }     // someone attached one meanwhile
           else { btn.disabled = false; box.innerHTML = errBox(billErr(e)); return; }
@@ -1290,7 +1308,7 @@
     if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
     let d;
-    try { d = await api(`projects/${state.project.id}/dashboard/`); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
+    try { d = await api(`projects/${state.project.id}/dashboard/`); } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); return; }
     const cats = viewableCats();
     const all = cats.length === CATS.length;
     // Everything on this screen is limited to the categories you may view.
@@ -1298,26 +1316,26 @@
     const pct = v => (total > 0 ? Math.round((Number(v) / total) * 100) : 0);
 
     $view.innerHTML = `
-      <h1>📊 हिसाब देखें <small>Total Expense</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>
-      <div class="card"><div class="muted">कुल खर्च <small>Total Expense</small></div><div class="big-total">${money(total)}</div></div>
-      <h2>किस पर कितना खर्च हुआ</h2>
+      <h1>📊 ${L('हिसाब देखें', 'Total Expense')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
+      <div class="card"><div class="muted">${L('कुल खर्च', 'Total Expense')}</div><div class="big-total">${money(total)}</div></div>
+      <h2>${L('किस पर कितना खर्च हुआ', 'Spend by category')}</h2>
       ${cats.map(c => { const link = can(Authz.reportPermission(c.key)); return `
         <${link ? `a href="#/report/${c.key}"` : 'div'} class="card">
-          <div class="row"><b>${c.icon} ${c.hi} <small>${c.en}</small></b><span class="amount">${money(d.category_breakup[c.key])}</span></div>
+          <div class="row"><b>${c.icon} ${catLabel(c)}</b><span class="amount">${money(d.category_breakup[c.key])}</span></div>
           <div class="bar"><i style="width:${pct(d.category_breakup[c.key])}%"></i></div>
-          <div class="muted" style="margin-top:6px">${pct(d.category_breakup[c.key])}%${link ? ' · देखने के लिए छूइए ›' : ''}</div>
+          <div class="muted" style="margin-top:6px">${pct(d.category_breakup[c.key])}%${link ? ' · ' + L('देखने के लिए छूइए ›', 'Tap to view ›') : ''}</div>
         </${link ? 'a' : 'div'}>`; }).join('')}
-      ${all && d.owner_contribution.length ? `<h2>मालिक का हिस्सा <small>Owner Share</small></h2>` + d.owner_contribution.map(o => `
+      ${all && d.owner_contribution.length ? `<h2>${L('मालिक का हिस्सा', 'Owner Share')}</h2>` + d.owner_contribution.map(o => `
         <div class="card"><div class="row"><b>${esc(o.owner_name)}</b><span class="amount">${money(o.total)}</span></div>
-        <div class="muted">कुल खर्च का ${pct(o.total)}% दिया</div></div>`).join('') : ''}
-      ${can('canViewContractors') && d.contractor_positions.length ? `<h2>ठेकेदार का हिसाब</h2>` + d.contractor_positions.map(c => {
+        <div class="muted">${L(`कुल खर्च का ${pct(o.total)}% दिया`, `Paid ${pct(o.total)}% of total expense`)}</div></div>`).join('') : ''}
+      ${can('canViewContractors') && d.contractor_positions.length ? `<h2>${L('ठेकेदार का हिसाब', 'Contractor Statement')}</h2>` + d.contractor_positions.map(c => {
         const bal = Number(c.balance);
         return `<div class="card"><b>${esc(c.contractor_name)}</b>
           ${c.work_description ? `<div class="muted">${esc(c.work_description)}</div>` : ''}
-          <div class="row"><span class="muted">पूरा काम</span><span>${money(c.contract_amount)}</span></div>
-          <div class="row"><span class="muted">अब तक दिया</span><span>${money(c.paid_amount)}</span></div>
-          <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div></div>`;
+          <div class="row"><span class="muted">${L('पूरा काम', 'Contract')}</span><span>${money(c.contract_amount)}</span></div>
+          <div class="row"><span class="muted">${L('अब तक दिया', 'Paid')}</span><span>${money(c.paid_amount)}</span></div>
+          <div class="row"><b>${bal < 0 ? L('ज़्यादा दिया', 'Overpaid') : L('देना बाकी', 'Balance due')}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div></div>`;
       }).join('') : ''}`;
   }
 
@@ -1328,7 +1346,7 @@
     loading();
     const q = `?project=${state.project.id}`;
     // "View Expenses" for one person: opens the full server-side history filtered to them.
-    const viewLink = filter => (can('canViewExpenses') ? `<a class="btn line" href="#/list?${filter}" style="margin-top:8px">📋 खर्च देखें <span class="sub">View Expenses</span></a>` : '');
+    const viewLink = filter => (can('canViewExpenses') ? `<a class="btn line" href="#/list?${filter}" style="margin-top:8px">📋 ${L('खर्च देखें', 'View Expenses')}</a>` : '');
     try {
       let rows, total;
       if (key === 'LABOUR') { const r = await api('reports/labour/' + q); rows = r.labour.map(x => [x.labour_name, x.total_paid, `labour=${x.labour_id}`]); total = r.grand_total; }
@@ -1341,20 +1359,20 @@
           const bal = Number(x.balance);
           return `<b>${esc(x.contractor_name)}</b>
             ${x.work_description ? `<div class="muted">${esc(x.work_description)}</div>` : ''}
-            <div class="row"><span class="muted">पूरा काम</span><span>${money(x.contract_amount)}</span></div>
-            <div class="row"><span class="muted">अब तक दिया</span><span>${money(x.paid_amount)}</span></div>
-            <div class="row"><b>${bal < 0 ? 'ज़्यादा दिया' : 'देना बाकी'}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>
+            <div class="row"><span class="muted">${L('पूरा काम', 'Contract')}</span><span>${money(x.contract_amount)}</span></div>
+            <div class="row"><span class="muted">${L('अब तक दिया', 'Paid')}</span><span>${money(x.paid_amount)}</span></div>
+            <div class="row"><b>${bal < 0 ? L('ज़्यादा दिया', 'Overpaid') : L('देना बाकी', 'Balance due')}</b><span class="pill ${bal < 0 ? 'warn' : ''}" style="font-size:1.1rem">${money(Math.abs(bal))}</span></div>
             ${viewLink(`contractor_contract=${x.contract_id}`)}`;
         });
       }
       else { const r = await api('reports/misc/' + q); rows = r.expense_types.map(x => [x.expense_type, x.total]); total = r.grand_total; }
       $view.innerHTML = `
-        <h1>${c.icon} ${c.hi} <small>${c.en}</small></h1>
-        <div class="card"><div class="muted">कुल खर्च <small>Total</small></div><div class="big-total">${money(total)}</div></div>` +
+        <h1>${c.icon} ${catLabel(c)}</h1>
+        <div class="card"><div class="muted">${L('कुल खर्च', 'Total')}</div><div class="big-total">${money(total)}</div></div>` +
         (rows.length ? rows.map(row => `<div class="card">${key === 'CONTRACTOR' ? row : `<div class="row"><b>${esc(row[0])}</b><span class="amount">${money(row[1])}</span></div>${row[2] ? viewLink(row[2]) : ''}`}</div>`).join('')
-          : '<div class="empty"><div class="ico">📭</div>अभी कोई खर्च नहीं है.</div>') +
-        (can('canViewExpenses') ? `<a class="btn line" href="#/list?cat=${key}">📋 सारे खर्च देखें <span class="sub">View all</span></a>` : '');
-    } catch (e) { $view.innerHTML = errBox(friendly(e)); }
+          : `<div class="empty"><div class="ico">📭</div>${L('अभी कोई खर्च नहीं है.', 'No expenses yet.')}</div>`) +
+        (can('canViewExpenses') ? `<a class="btn line" href="#/list?cat=${key}">📋 ${L('सारे खर्च देखें', 'View all')}</a>` : '');
+    } catch (e) { $view.innerHTML = errBox(friendly(e, MSG.noPermissionView)); }
   }
 
   // ---------- management screens (users, members, passwords): all stored on the server ----------
@@ -1372,23 +1390,23 @@
     return d.members.map(asPerson);
   }
   const passwordFields = (withOld) => `
-    ${withOld ? '<label for="pw0">पुराना पासवर्ड <small>Current password</small></label><input id="pw0" type="password" autocomplete="current-password">' : ''}
-    <label for="pw1">नया पासवर्ड <small>New password (min 8)</small></label><input id="pw1" type="password" autocomplete="new-password">
-    <label for="pw2">नया पासवर्ड दोबारा <small>Confirm</small></label><input id="pw2" type="password" autocomplete="new-password">`;
+    ${withOld ? `<label for="pw0">${L('पुराना पासवर्ड', 'Current password')}</label><input id="pw0" type="password" autocomplete="current-password">` : ''}
+    <label for="pw1">${L('नया पासवर्ड', 'New password (min 8)')}</label><input id="pw1" type="password" autocomplete="new-password">
+    <label for="pw2">${L('नया पासवर्ड दोबारा', 'Confirm')}</label><input id="pw2" type="password" autocomplete="new-password">`;
   // Checks the typed passwords, then sends them (over HTTPS) to `send`; the server stores only the hash.
   function passwordForm(formId, withOld, send) {
     const f = document.getElementById(formId), $ = id => document.getElementById(id);
     f.onsubmit = async ev => {
       ev.preventDefault();
       const out = $('pwmsg');
-      if (withOld && !$('pw0').value) { out.innerHTML = errBox('कृपया पुराना पासवर्ड भरें.'); return; }
-      if ($('pw1').value.length < 8) { out.innerHTML = errBox('नया पासवर्ड कम से कम 8 अक्षर का हो.'); return; }
-      if ($('pw1').value !== $('pw2').value) { out.innerHTML = errBox('दोनों पासवर्ड एक जैसे नहीं हैं.'); return; }
+      if (withOld && !$('pw0').value) { out.innerHTML = errBox(L('कृपया पुराना पासवर्ड भरें.', 'Please enter your current password.')); return; }
+      if ($('pw1').value.length < 8) { out.innerHTML = errBox(L('नया पासवर्ड कम से कम 8 अक्षर का हो.', 'The new password must be at least 8 characters.')); return; }
+      if ($('pw1').value !== $('pw2').value) { out.innerHTML = errBox(L('दोनों पासवर्ड एक जैसे नहीं हैं.', 'The two passwords do not match.')); return; }
       const btn = f.querySelector('button[type=submit]'); btn.disabled = true;
       try {
         await send(withOld ? $('pw0').value : null, $('pw1').value);
         f.reset();
-        out.innerHTML = '<div class="msg ok" role="status">✅ पासवर्ड बदल गया. <small>Password changed.</small></div>';
+        out.innerHTML = `<div class="msg ok" role="status">✅ ${L('पासवर्ड बदल गया.', 'Password changed.')}</div>`;
       } catch (e) { out.innerHTML = errBox(serverMsg(e) || friendly(e)); }
       btn.disabled = false;
     };
@@ -1397,10 +1415,10 @@
   function screenProfile() {
     chrome('profile', '#/home');
     const role = (state.project && Authz.roleIn(state.user, state.project.id)) || state.user.role;
-    $view.innerHTML = `<h1>🔑 पासवर्ड बदलें <small>Change Password</small></h1>
+    $view.innerHTML = `<h1>🔑 ${L('पासवर्ड बदलें', 'Change Password')}</h1>
       <div class="card"><b>${esc(state.user.name)}</b><div class="muted">${esc(roleName(role))}${state.user.email ? ' · ' + esc(state.user.email) : ''}</div></div>
       <div id="pwmsg"></div>
-      <form id="pwf" novalidate>${passwordFields(true)}<button class="btn green" type="submit">💾 पासवर्ड बदलें <span class="sub">CHANGE PASSWORD</span></button></form>`;
+      <form id="pwf" novalidate>${passwordFields(true)}<button class="btn green" type="submit">💾 ${L('पासवर्ड बदलें', 'CHANGE PASSWORD')}</button></form>`;
     passwordForm('pwf', true, async (old, pw) => {
       const res = await api('auth/change-password/', { method: 'POST', body: { old_password: old, new_password: pw } });
       state.token = res.token; store.set('token', res.token);    // the server signed out every other session
@@ -1415,10 +1433,10 @@
     let target;
     try { target = (await loadPeople()).find(u => String(u.id) === String(id)); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
     if (!target || !target.canReset) { location.hash = '#/home'; return; }
-    $view.innerHTML = `<h1>🔑 पासवर्ड रीसेट <small>Reset Password</small></h1>
+    $view.innerHTML = `<h1>🔑 ${L('पासवर्ड रीसेट', 'Reset Password')}</h1>
       <div class="card"><b>${esc(target.name)}</b><div class="muted">${esc(roleName(target.role))}${target.email ? ' · ' + esc(target.email) : ''}</div></div>
       <div id="pwmsg"></div>
-      <form id="pwf" novalidate>${passwordFields(false)}<button class="btn green" type="submit">💾 नया पासवर्ड सेट करें <span class="sub">RESET PASSWORD</span></button></form>`;
+      <form id="pwf" novalidate>${passwordFields(false)}<button class="btn green" type="submit">💾 ${L('नया पासवर्ड सेट करें', 'RESET PASSWORD')}</button></form>`;
     passwordForm('pwf', false, (_, pw) => api(`users/${target.id}/reset-password/`, { method: 'POST', body: { new_password: pw } }));
   }
 
@@ -1428,35 +1446,35 @@
     loading();
     let list;
     try { list = (await api('users/')).map(asPerson); } catch (e) { $view.innerHTML = errBox(friendly(e)); return; }
-    $view.innerHTML = `<h1>👥 यूज़र <small>Users</small></h1>` +
-      (state.me.is_super_admin ? `<h2>➕ नया यूज़र <small>Create User</small></h2>
+    $view.innerHTML = `<h1>👥 ${L('यूज़र', 'Users')}</h1>` +
+      (state.me.is_super_admin ? `<h2>➕ ${L('नया यूज़र', 'Create User')}</h2>
         <div class="card"><div id="cumsg">${userNote}</div>
           <form id="cuf" novalidate>
-            <label for="cu-name">नाम <small>Name</small></label><input id="cu-name" type="text" autocomplete="off">
-            <label for="cu-user">यूज़र नाम / ईमेल <small>Username or email</small></label><input id="cu-user" type="text" autocomplete="off" autocapitalize="none">
-            <label for="cu-mobile">मोबाइल <small>Mobile</small></label><input id="cu-mobile" type="tel" inputmode="tel" autocomplete="off">
-            <label for="cu-role">भूमिका <small>Role</small></label>
+            <label for="cu-name">${L('नाम', 'Name')}</label><input id="cu-name" type="text" autocomplete="off">
+            <label for="cu-user">${L('यूज़र नाम / ईमेल', 'Username or email')}</label><input id="cu-user" type="text" autocomplete="off" autocapitalize="none">
+            <label for="cu-mobile">${L('मोबाइल', 'Mobile')}</label><input id="cu-mobile" type="tel" inputmode="tel" autocomplete="off">
+            <label for="cu-role">${L('भूमिका', 'Role')}</label>
             <select id="cu-role"><option value="OWNER">OWNER</option><option value="MANAGER" selected>MANAGER</option></select>
-            <label for="cu-pw1">पासवर्ड <small>Password (min 8)</small></label><input id="cu-pw1" type="password" autocomplete="new-password">
-            <label for="cu-pw2">पासवर्ड दोबारा <small>Confirm password</small></label><input id="cu-pw2" type="password" autocomplete="new-password">
-            <div class="muted">प्रोजेक्ट बाद में हर प्रोजेक्ट के सदस्य पेज से जोड़ें. <small>Add projects later from each project's Members screen.</small></div>
-            <button class="btn green" type="submit">➕ यूज़र बनाएँ <span class="sub">CREATE USER</span></button></form></div>` : '') +
+            <label for="cu-pw1">${L('पासवर्ड', 'Password (min 8)')}</label><input id="cu-pw1" type="password" autocomplete="new-password">
+            <label for="cu-pw2">${L('पासवर्ड दोबारा', 'Confirm password')}</label><input id="cu-pw2" type="password" autocomplete="new-password">
+            <div class="muted">${L("प्रोजेक्ट बाद में हर प्रोजेक्ट के सदस्य पेज से जोड़ें.", "Add projects later from each project's Members screen.")}</div>
+            <button class="btn green" type="submit">➕ ${L('यूज़र बनाएँ', 'CREATE USER')}</button></form></div>` : '') +
       list.map(u => `<div class="card"><div class="row"><b>${esc(u.name)}</b><span class="pill">${esc(roleName(u.role))}</span></div>
         <div class="muted">${esc(u.email)}</div>
-        <div class="muted">${u.allProjects ? 'सारे प्रोजेक्ट <small>All projects</small>' : u.projects.length ? u.projects.map(a => esc(projName(a.project_id)) + ' (' + roleName(WEB_ROLE[a.role]) + ')').join(', ') : 'कोई प्रोजेक्ट नहीं'}</div>
-        ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 पासवर्ड रीसेट <span class="sub">Reset Password</span></a>` : ''}</div>`).join('');
+        <div class="muted">${u.allProjects ? L('सारे प्रोजेक्ट', 'All projects') : u.projects.length ? u.projects.map(a => esc(projName(a.project_id)) + ' (' + roleName(WEB_ROLE[a.role]) + ')').join(', ') : L('कोई प्रोजेक्ट नहीं', 'No projects')}</div>
+        ${u.canReset ? `<a class="btn line" href="#/resetpw/${esc(u.id)}" style="min-height:52px;font-size:1rem">🔑 ${L('पासवर्ड रीसेट', 'Reset Password')}</a>` : ''}</div>`).join('');
     const f = document.getElementById('cuf');
     if (f) f.onsubmit = async ev => {
       ev.preventDefault();
       const v = id => document.getElementById(id).value.trim(), out = document.getElementById('cumsg');
-      if (!v('cu-name') || !v('cu-user')) { out.innerHTML = errBox('नाम और यूज़र नाम भरें.'); return; }
-      if (document.getElementById('cu-pw1').value.length < 8) { out.innerHTML = errBox('पासवर्ड कम से कम 8 अक्षर का हो.'); return; }
-      if (document.getElementById('cu-pw1').value !== document.getElementById('cu-pw2').value) { out.innerHTML = errBox('दोनों पासवर्ड एक जैसे नहीं हैं.'); return; }
+      if (!v('cu-name') || !v('cu-user')) { out.innerHTML = errBox(L('नाम और यूज़र नाम भरें.', 'Enter a name and username.')); return; }
+      if (document.getElementById('cu-pw1').value.length < 8) { out.innerHTML = errBox(L('पासवर्ड कम से कम 8 अक्षर का हो.', 'The password must be at least 8 characters.')); return; }
+      if (document.getElementById('cu-pw1').value !== document.getElementById('cu-pw2').value) { out.innerHTML = errBox(L('दोनों पासवर्ड एक जैसे नहीं हैं.', 'The two passwords do not match.')); return; }
       f.querySelector('button[type=submit]').disabled = true;
       try {
         await api('users/', { method: 'POST', body: { name: v('cu-name'), username: v('cu-user'), mobile: v('cu-mobile'), role: v('cu-role'),
           password: document.getElementById('cu-pw1').value, confirm_password: document.getElementById('cu-pw2').value } });
-        userNote = '<div class="msg ok" role="status">✅ यूज़र बन गया. <small>User created.</small></div>';
+        userNote = `<div class="msg ok" role="status">✅ ${L('यूज़र बन गया.', 'User created.')}</div>`;
         screenUsers();
       } catch (e) {
         f.querySelector('button[type=submit]').disabled = false;
@@ -1471,7 +1489,6 @@
   // authz.js. "Users & access" is the existing screens at #/access/* (unchanged); this tab bar just
   // links out to them so both live under one Settings shell.
   const PROJECT_STATUSES = ['PLANNED', 'ONGOING', 'COMPLETED', 'ARCHIVED'];
-  const STATUS_KEY = { PLANNED: 'statusPlanned', ONGOING: 'statusOngoing', COMPLETED: 'statusCompleted', ARCHIVED: 'statusArchived' };
   const settingsTabs = active => `<div class="ac-tabs">
     <a href="#/settings" class="${active === 'projects' ? 'on' : ''}">🏗️ ${esc(I18n.t('projectsTab'))}</a>
     <a href="#/access" class="${active === 'access' ? 'on' : ''}">🔐 ${esc(I18n.t('usersAccessTab'))}</a>
@@ -1786,7 +1803,7 @@
   }
 
   async function loadAccessDetail(catalog) {
-    document.getElementById('acDetail').innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+    document.getElementById('acDetail').innerHTML = `<div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div>`;
     try { ac.detail = await api(`access/users/${ac.selectedUserId}/access/`); } catch (e) { document.getElementById('acDetail').innerHTML = errBox(friendly(e)); return; }
     renderAccessDetail(catalog);
   }
@@ -1969,14 +1986,14 @@
       ac.checkUserId = e.target.value ? Number(e.target.value) : null;
       ac.checkData = null;
       if (!ac.checkUserId) { document.getElementById('chkBody').innerHTML = ''; return; }
-      document.getElementById('chkBody').innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+      document.getElementById('chkBody').innerHTML = `<div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div>`;
       try { ac.checkData = await api(`access/check/${ac.checkUserId}/`); } catch (e2) { document.getElementById('chkBody').innerHTML = errBox(friendly(e2)); return; }
       renderCheckBody(catalog);
     };
     document.getElementById('whoGo').onclick = async () => {
       const code = document.getElementById('whoPerm').value, project = document.getElementById('whoProj').value;
       const out = document.getElementById('whoResult');
-      out.innerHTML = '<div class="spinner">⏳ रुकिए...</div>';
+      out.innerHTML = `<div class="spinner">⏳ ${L('रुकिए...', 'Loading...')}</div>`;
       try {
         const rows = await api(`access/who-can/?code=${encodeURIComponent(code)}&project=${encodeURIComponent(project)}`);
         out.innerHTML = rows.length ? `<div class="ac-people">${rows.map(r => `<div class="ac-person"><span class="ac-avatar">${esc(initials(r.name))}</span><span class="name">${esc(r.name)}</span><span class="chip">${esc(r.reason)}</span></div>`).join('')}</div>`
@@ -2020,7 +2037,7 @@
     box.className = 'modal';
     box.innerHTML = `<div class="modal-box" role="dialog" aria-modal="true" aria-label="${esc(text)}">
       <h2 style="margin-top:0">${esc(text)}</h2>
-      <button class="btn line" type="button" id="cb-cancel">Cancel</button>
+      <button class="btn line" type="button" id="cb-cancel">${L('रद्द करें', 'Cancel')}</button>
       <button class="btn green" type="button" id="cb-ok">${esc(okLabel)}</button></div>`;
     document.body.appendChild(box);
     const close = () => { box.remove(); document.removeEventListener('keydown', onKey); window.removeEventListener('hashchange', close); };
@@ -2043,40 +2060,40 @@
     return m ? Number(m[1] || 0) * 100 + Number((m[2] || '').padEnd(2, '0') || 0) : 0;
   };
   const fromPaise = c => `${Math.floor(c / 100)}.${String(c % 100).padStart(2, '0')}`;
-  const modeName = k => (MODES.find(m => m.key === k) || { en: k }).en;
-  const fundNoAccess = `<div class="empty"><div class="ico">🔒</div><h2>इस फंड को देखने की अनुमति नहीं है</h2><p>You do not have permission to view Manager Fund.</p></div>`;
-  const fundErr = e => (e && e.status === 403 ? 'You do not have permission for this Manager Fund action.' : (serverMsg(e) || friendly(e)));
+  const modeName = k => modeLabel(MODES.find(m => m.key === k) || { hi: k, en: k });
+  const fundNoAccess = () => `<div class="empty"><div class="ico">🔒</div><h2>${L('इस फंड को देखने की अनुमति नहीं है', 'You do not have permission to view Manager Fund.')}</h2></div>`;
+  const fundErr = e => (e && e.status === 403 ? L('इस Manager Fund कार्रवाई की अनुमति नहीं है.', 'You do not have permission for this Manager Fund action.') : (serverMsg(e) || friendly(e)));
 
   async function screenFund() {
     chrome('fund', '#/home');
-    if (state.fundForbidden) { $view.innerHTML = fundNoAccess; return; }
+    if (state.fundForbidden) { $view.innerHTML = fundNoAccess(); return; }
     if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
     let every;
     try { every = (await api('manager-funds/statement/')).statements; }      // the server returns only what this user may see
-    catch (e) { $view.innerHTML = e.status === 403 ? fundNoAccess : errBox(fundErr(e)); return; }
+    catch (e) { $view.innerHTML = e.status === 403 ? fundNoAccess() : errBox(fundErr(e)); return; }
     const stmts = every.filter(x => x.position.project_id === state.project.id);
     const flash = fundFlash; fundFlash = '';
     const canAll = state.projects.length > 1 && !state.me.manager_id;          // owners / admin: an all-projects overview
     if (!canAll) fundAll = false;
     const projectPicker = state.projects.length > 1
-      ? `<select id="fproj" aria-label="Project">${canAll ? `<option value="all" ${fundAll ? 'selected' : ''}>सभी प्रोजेक्ट / All projects</option>` : ''}${state.projects.map(p => `<option value="${p.id}" ${!fundAll && p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
+      ? `<select id="fproj" aria-label="Project">${canAll ? `<option value="all" ${fundAll ? 'selected' : ''}>${L('सभी प्रोजेक्ट', 'All projects')}</option>` : ''}${state.projects.map(p => `<option value="${p.id}" ${!fundAll && p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : '';
     // Manager | Fund Received | Distributed to Labour | Available Balance, one row per manager (+ a project total).
     const fundTable = list => {
       const sum = k => list.reduce((t, x) => t + Number(x.position[k]), 0);
-      const cells = (name, r, d, b) => `<span class="c-name">${name}</span><span data-label="Fund Received">${money(r)}</span><span data-label="Distributed to Labour">${money(d)}</span><span data-label="Available Balance"><b>${money(b)}</b></span>`;
-      return `<div class="fund-table" role="table"><div class="fund-row head" role="row"><span>Manager <small>मैनेजर</small></span><span>Fund Received <small>फंड मिला</small></span><span>Distributed to Labour <small>मज़दूरों को बाँटा</small></span><span>Available Balance <small>बचा हुआ</small></span></div>
+      const cells = (name, r, d, b) => `<span class="c-name">${name}</span><span data-label="${L('फंड मिला', 'Fund Received')}">${money(r)}</span><span data-label="${L('मज़दूरों को बाँटा', 'Distributed to Labour')}">${money(d)}</span><span data-label="${L('बचा हुआ', 'Available Balance')}"><b>${money(b)}</b></span>`;
+      return `<div class="fund-table" role="table"><div class="fund-row head" role="row"><span>${L('मैनेजर', 'Manager')}</span><span>${L('फंड मिला', 'Fund Received')}</span><span>${L('मज़दूरों को बाँटा', 'Distributed to Labour')}</span><span>${L('बचा हुआ', 'Available Balance')}</span></div>
         ${list.map(x => `<button type="button" class="fund-row pick ${!fundAll && x.position.project_id === state.project.id && x.position.manager_id === fundManager ? 'on' : ''}" data-p="${x.position.project_id}" data-m="${x.position.manager_id}">${cells(esc(x.position.manager_name), x.position.total_received, x.position.total_distributed, x.position.available_balance)}</button>`).join('')}
-        ${list.length > 1 ? `<div class="fund-row total">${cells('Project total <small>कुल</small>', sum('total_received'), sum('total_distributed'), sum('available_balance'))}</div>` : ''}</div>`;
+        ${list.length > 1 ? `<div class="fund-row total">${cells(L('कुल', 'Project total'), sum('total_received'), sum('total_distributed'), sum('available_balance'))}</div>` : ''}</div>`;
     };
     const bindPick = () => $view.querySelectorAll('.fund-row.pick').forEach(b => b.onclick = () => {
       state.project = state.projects.find(p => p.id === Number(b.dataset.p)); store.set('projectId', state.project.id); state.names = null;
       fundAll = false; fundManager = Number(b.dataset.m); screenFund(); window.scrollTo(0, 0);
     });
-    const actions = `${can('canGiveManagerFund') ? '<a class="btn green" href="#/givefund">➕ फंड दें <span class="sub">Give Fund</span></a>' : ''}
-      ${can('canDistributeManagerFund') && stmts.length ? '<a class="btn" href="#/distribute">📤 मज़दूरों को दें <span class="sub">Distribute to Labour</span></a>' : ''}`;
-    const head = `<h1>💰 मैनेजर फंड <small>Manager Fund</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${fundAll ? 'सभी प्रोजेक्ट / All projects' : esc(state.project.name)}</b></p>${projectPicker}
+    const actions = `${can('canGiveManagerFund') ? `<a class="btn green" href="#/givefund">➕ ${L('फंड दें', 'Give Fund')}</a>` : ''}
+      ${can('canDistributeManagerFund') && stmts.length ? `<a class="btn" href="#/distribute">📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</a>` : ''}`;
+    const head = `<h1>💰 ${L('मैनेजर फंड', 'Manager Fund')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${fundAll ? L('सभी प्रोजेक्ट', 'All projects') : esc(state.project.name)}</b></p>${projectPicker}
       ${flash ? `<div class="msg ok" role="status">${esc(flash)}</div>` : ''}`;
     const bindProject = () => {
       const sel = document.getElementById('fproj');
@@ -2089,12 +2106,12 @@
     if (fundAll) {                                    // every project the user may see, manager-wise
       const parts = state.projects.map(p => ({ p, list: every.filter(x => x.position.project_id === p.id) })).filter(x => x.list.length);
       $view.innerHTML = `${head}` + (parts.map(x => `<h2>🏗️ ${esc(x.p.name)}</h2>${fundTable(x.list)}`).join('')
-        || '<div class="empty"><div class="ico">📭</div><p>अभी किसी प्रोजेक्ट में कोई फंड नहीं दिया गया है.<br><small>No fund has been given on any project yet.</small></p></div>');
+        || `<div class="empty"><div class="ico">📭</div><p>${L('अभी किसी प्रोजेक्ट में कोई फंड नहीं दिया गया है.', 'No fund has been given on any project yet.')}</p></div>`);
       bindProject(); bindPick();
       return;
     }
     if (!stmts.length) {
-      $view.innerHTML = `${head}<div class="empty"><div class="ico">📭</div><p>इस प्रोजेक्ट में अभी किसी मैनेजर को फंड नहीं मिला है.<br><small>No fund has been given to a manager on this project yet.</small></p></div>${actions}`;
+      $view.innerHTML = `${head}<div class="empty"><div class="ico">📭</div><p>${L('इस प्रोजेक्ट में अभी किसी मैनेजर को फंड नहीं मिला है.', 'No fund has been given to a manager on this project yet.')}</p></div>${actions}`;
       bindProject();
       return;
     }
@@ -2102,32 +2119,32 @@
     fundManager = cur.position.manager_id;
 
     const owners = new Map(cur.funds.map(f => [f.id, f.given_by_owner_name]));
-    const pill = st => `<span class="pill ${st === 'ACTIVE' ? '' : 'warn'}">${st === 'ACTIVE' ? 'Active' : 'Cancelled — not counted'}</span>`;
+    const pill = st => `<span class="pill ${st === 'ACTIVE' ? '' : 'warn'}">${st === 'ACTIVE' ? L('चालू', 'Active') : L('रद्द — गिना नहीं गया', 'Cancelled — not counted')}</span>`;
     const draw = () => {
       const p = cur.position, bal = Number(p.available_balance);
       $view.innerHTML = `${head}
-        ${!state.me.manager_id ? `<h2>मैनेजर <small>Manager-wise Summary</small></h2>${fundTable(stmts)}` : ''}
-        <p class="muted">मैनेजर: <b>${esc(p.manager_name)}</b></p>
+        ${!state.me.manager_id ? `<h2>${L('मैनेजर', 'Manager-wise Summary')}</h2>${fundTable(stmts)}` : ''}
+        <p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(p.manager_name)}</b></p>
         <div class="tot-grid">
-          <div class="card tot-box"><div class="muted">कुल फंड मिला <small>Total Fund Received</small></div><div class="big-total">${money(p.total_received)}</div><div class="muted">मालिक → मैनेजर <small>Owner → Manager</small></div></div>
-          <div class="card tot-box"><div class="muted">कुल बाँटा गया <small>Total Distributed</small></div><div class="big-total">${money(p.total_distributed)}</div><div class="muted">मैनेजर → मज़दूर <small>Manager → Labour</small></div></div>
-          <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">बचा हुआ फंड <small>Available Balance</small></div><div class="big-total">${money(p.available_balance)}</div><div class="muted">= मिला − बाँटा <small>Received − active distribution</small></div></div>
+          <div class="card tot-box"><div class="muted">${L('कुल फंड मिला', 'Total Fund Received')}</div><div class="big-total">${money(p.total_received)}</div><div class="muted">${L('मालिक → मैनेजर', 'Owner → Manager')}</div></div>
+          <div class="card tot-box"><div class="muted">${L('कुल बाँटा गया', 'Total Distributed')}</div><div class="big-total">${money(p.total_distributed)}</div><div class="muted">${L('मैनेजर → मज़दूर', 'Manager → Labour')}</div></div>
+          <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">${L('बचा हुआ फंड', 'Available Balance')}</div><div class="big-total">${money(p.available_balance)}</div><div class="muted">${L('= मिला − बाँटा', 'Received − active distribution')}</div></div>
         </div>
-        ${p.total_received > 0 && bal === 0 ? '<div class="msg info">पूरा फंड बाँटा जा चुका है — अब कोई बचत नहीं. <small>No balance left.</small></div>' : ''}
+        ${p.total_received > 0 && bal === 0 ? `<div class="msg info">${L('पूरा फंड बाँटा जा चुका है — अब कोई बचत नहीं.', 'No balance left.')}</div>` : ''}
         ${actions}
-        <h2>📥 फंड मिला <small>Fund Received History</small></h2>` +
+        <h2>📥 ${L('फंड मिला', 'Fund Received History')}</h2>` +
         (cur.funds.map(f => `<div class="card item"><div class="row"><span class="who">${money(f.amount)}</span><span class="meta">${shortDate(f.date)}</span></div>
-          <div class="meta">मालिक: <b>${esc(f.given_by_owner_name)}</b> · ${esc(modeName(f.payment_mode))}</div>
-          ${f.remarks ? `<div class="note">📝 ${esc(f.remarks)}</div>` : ''}</div>`).join('') || '<div class="empty">अभी कोई फंड नहीं मिला.</div>') +
-        `<h2>📤 मज़दूरों को दिया <small>Labour Distribution History</small></h2>` +
+          <div class="meta">${L('मालिक', 'Owner')}: <b>${esc(f.given_by_owner_name)}</b> · ${esc(modeName(f.payment_mode))}</div>
+          ${f.remarks ? `<div class="note">📝 ${esc(f.remarks)}</div>` : ''}</div>`).join('') || `<div class="empty">${L('अभी कोई फंड नहीं मिला.', 'No fund received yet.')}</div>`) +
+        `<h2>📤 ${L('मज़दूरों को दिया', 'Labour Distribution History')}</h2>` +
         (cur.distributions.slice().reverse().map(d => `<div class="card item ${d.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${esc(d.labour_name)}</span><span class="amount">${money(d.amount)}</span></div>
-          <div class="meta">${shortDate(d.date)} · फंड #${d.manager_fund_id} (${esc(owners.get(d.manager_fund_id) || '—')}) ${pill(d.status)}</div>
-          ${d.remarks ? `<div class="note">📝 ${esc(d.remarks)}</div>` : ''}</div>`).join('') || '<div class="empty">अभी किसी मज़दूर को नहीं दिया.</div>') +
-        `<h2>🧾 हिसाब-किताब <small>Running Statement</small></h2>
-        <p class="muted">📥 फंड = मैनेजर को मिला पैसा · 📤 = मैनेजर ने मज़दूर को दिया · रद्द किया हुआ जोड़ा नहीं जाता.</p>` +
+          <div class="meta">${shortDate(d.date)} · ${L('फंड', 'Fund')} #${d.manager_fund_id} (${esc(owners.get(d.manager_fund_id) || '—')}) ${pill(d.status)}</div>
+          ${d.remarks ? `<div class="note">📝 ${esc(d.remarks)}</div>` : ''}</div>`).join('') || `<div class="empty">${L('अभी किसी मज़दूर को नहीं दिया.', 'No distribution to labour yet.')}</div>`) +
+        `<h2>🧾 ${L('हिसाब-किताब', 'Running Statement')}</h2>
+        <p class="muted">${L('📥 फंड = मैनेजर को मिला पैसा · 📤 = मैनेजर ने मज़दूर को दिया · रद्द किया हुआ जोड़ा नहीं जाता.', '📥 Fund = money received by manager · 📤 = manager paid to labour · cancelled entries are not counted.')}</p>` +
         (cur.ledger.map(e => `<div class="card item ${e.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${e.kind === 'FUND' ? '📥' : '📤'} ${esc(e.label)}</span>
           <span class="amount ${e.kind === 'FUND' ? 'in' : 'out'}">${e.kind === 'FUND' ? '+' : '−'} ${money(e.amount)}</span></div>
-          <div class="row meta"><span>${shortDate(e.date)} ${e.status === 'ACTIVE' ? '' : pill(e.status)}</span><span>बचा: <b>${money(e.running_balance)}</b></span></div></div>`).join('') || '<div class="empty">अभी कुछ नहीं.</div>');
+          <div class="row meta"><span>${shortDate(e.date)} ${e.status === 'ACTIVE' ? '' : pill(e.status)}</span><span>${L('बचा', 'Balance')}: <b>${money(e.running_balance)}</b></span></div></div>`).join('') || `<div class="empty">${L('अभी कुछ नहीं.', 'Nothing yet.')}</div>`);
       bindProject(); bindPick();
     };
     draw();
@@ -2143,28 +2160,28 @@
     catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
     const onBehalf = state.user.allProjects;          // an admin may record a fund on behalf of a project owner
     const options = list => list.map(x => `<option value="${x.id}">${esc(x.name)}</option>`).join('');
-    const title = `<h1>➕ फंड दें <small>Give Fund</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b> · मालिक → मैनेजर. यह खर्च नहीं है.</p>`;
+    const title = `<h1>➕ ${L('फंड दें', 'Give Fund')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b> · ${L('मालिक → मैनेजर. यह खर्च नहीं है.', 'Owner → Manager. This is not an expense.')}</p>`;
     if (!people.managers.length) {
-      $view.innerHTML = `${title}<div class="msg info">इस प्रोजेक्ट में अभी कोई मैनेजर नहीं जुड़ा है.<br><small>No manager is assigned to this project yet.</small></div>
-        <a class="btn line" href="#/fund">← वापस <span class="sub">Back</span></a>`;
+      $view.innerHTML = `${title}<div class="msg info">${L('इस प्रोजेक्ट में अभी कोई मैनेजर नहीं जुड़ा है.', 'No manager is assigned to this project yet.')}</div>
+        <a class="btn line" href="#/fund">← ${L('वापस', 'Back')}</a>`;
       return;
     }
     $view.innerHTML = `${title}<div id="gmsg"></div>
       <form id="gf" novalidate>
-        <label for="g-mgr">मैनेजर <small>Manager</small> *</label>
-        <select id="g-mgr"><option value="">— चुनिए —</option>${options(people.managers)}</select>
-        ${onBehalf ? `<label for="g-own">किस मालिक ने दिया <small>Given by owner</small> *</label>
-          <select id="g-own"><option value="">— चुनिए —</option>${options(people.owners)}</select>`
-          : `<p class="muted">दिया: <b>${esc(state.me.name)}</b></p>`}
-        <label for="g-amt">राशि <small>Amount</small> *</label>
+        <label for="g-mgr">${L('मैनेजर', 'Manager')} *</label>
+        <select id="g-mgr"><option value="">${L('— चुनिए —', '— Choose —')}</option>${options(people.managers)}</select>
+        ${onBehalf ? `<label for="g-own">${L('किस मालिक ने दिया', 'Given by owner')} *</label>
+          <select id="g-own"><option value="">${L('— चुनिए —', '— Choose —')}</option>${options(people.owners)}</select>`
+          : `<p class="muted">${L('दिया', 'Given by')}: <b>${esc(state.me.name)}</b></p>`}
+        <label for="g-amt">${L('राशि', 'Amount')} *</label>
         <div class="rupee"><span>₹</span><input id="g-amt" type="text" inputmode="decimal" autocomplete="off" placeholder="0"></div>
-        <label for="g-date">तारीख <small>Date</small> *</label><input id="g-date" type="date" value="${today()}">
-        <label for="g-mode">कैसे दिया <small>Payment mode</small></label>
-        <select id="g-mode">${MODES.map(m => `<option value="${m.key}">${m.hi} (${m.en})</option>`).join('')}</select>
-        <label for="g-note">जानकारी <small>Remarks (optional)</small></label><input id="g-note" type="text" autocomplete="off">
-        <button class="btn green" type="submit" id="g-save">💾 फंड सेव करें <span class="sub">SAVE FUND</span></button>
-        <a class="btn line" href="#/fund">रद्द करें <span class="sub">Cancel</span></a>
+        <label for="g-date">${L('तारीख', 'Date')} *</label><input id="g-date" type="date" value="${today()}">
+        <label for="g-mode">${L('कैसे दिया', 'Payment mode')}</label>
+        <select id="g-mode">${MODES.map(m => `<option value="${m.key}">${modeLabel(m)}</option>`).join('')}</select>
+        <label for="g-note">${L('जानकारी', 'Remarks (optional)')}</label><input id="g-note" type="text" autocomplete="off">
+        <button class="btn green" type="submit" id="g-save">💾 ${L('फंड सेव करें', 'SAVE FUND')}</button>
+        <a class="btn line" href="#/fund">${L('रद्द करें', 'Cancel')}</a>
       </form>`;
     const $ = id => document.getElementById(id);
     $('g-amt').oninput = e => { e.target.value = e.target.value.replace(/[^0-9.]/g, '').replace(/(\..*)\./g, '$1'); };
@@ -2173,18 +2190,18 @@
       const bad = t => { $('gmsg').innerHTML = errBox(t); window.scrollTo(0, 0); };
       const manager = Number($('g-mgr').value), owner = onBehalf ? Number($('g-own').value) : state.me.owner_id;
       const cents = toPaise($('g-amt').value);
-      if (!manager) return bad('कृपया मैनेजर चुनिए. (Choose a manager.)');
-      if (!owner) return bad('कृपया मालिक चुनिए. (Choose the owner.)');
-      if (!(cents > 0)) return bad('कृपया राशि भरें (0 से ज़्यादा). (Amount must be greater than zero.)');
-      if (cents >= 1e12) return bad('राशि बहुत बड़ी है। कृपया जाँच लें.');
-      if (!$('g-date').value) return bad('कृपया तारीख चुनिए.');
+      if (!manager) return bad(L('कृपया मैनेजर चुनिए.', 'Please choose a manager.'));
+      if (!owner) return bad(L('कृपया मालिक चुनिए.', 'Please choose the owner.'));
+      if (!(cents > 0)) return bad(L('कृपया राशि भरें (0 से ज़्यादा).', 'Please enter an amount greater than zero.'));
+      if (cents >= 1e12) return bad(L('राशि बहुत बड़ी है। कृपया जाँच लें.', 'That amount is too large. Please check it.'));
+      if (!$('g-date').value) return bad(L('कृपया तारीख चुनिए.', 'Please choose a date.'));
       $('g-save').disabled = true; $('gmsg').innerHTML = '';
       try {
         await api('manager-funds/', { method: 'POST', body: {
           project: state.project.id, manager, given_by_owner: owner, fund_amount: fromPaise(cents),
           fund_date: $('g-date').value, payment_mode: $('g-mode').value, remarks: $('g-note').value.trim() } });
       } catch (e) { $('g-save').disabled = false; bad(fundErr(e)); return; }
-      fundFlash = 'फंड सेव हो गया. (Fund saved.)'; fundManager = manager;
+      fundFlash = L('फंड सेव हो गया.', 'Fund saved.'); fundManager = manager;
       location.hash = '#/fund';
     };
   }
@@ -2200,10 +2217,10 @@
     catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
     const own = state.me.manager_id;                          // a manager distributes only their own fund
     const managers = own ? people.managers.filter(m => m.id === own) : people.managers;
-    const back = '<a class="btn line" href="#/fund">← फंड देखें <span class="sub">Back to Manager Fund</span></a>';
-    const title = `<h1>📤 मज़दूरों को दें <small>Distribute to Labour</small></h1>
-      <p class="muted">प्रोजेक्ट: <b>${esc(state.project.name)}</b></p>`;
-    if (!managers.length) { $view.innerHTML = `${title}<div class="msg info">कोई मैनेजर नहीं मिला. <small>No manager found for this project.</small></div>${back}`; return; }
+    const back = `<a class="btn line" href="#/fund">← ${L('फंड देखें', 'Back to Manager Fund')}</a>`;
+    const title = `<h1>📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</h1>
+      <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>`;
+    if (!managers.length) { $view.innerHTML = `${title}<div class="msg info">${L('कोई मैनेजर नहीं मिला.', 'No manager found for this project.')}</div>${back}`; return; }
     let manager = managers.find(m => m.id === fundManager) || managers[0];
     const picked = new Set(), amt = {};
     let q = '', showInactive = false, available = 0, saving = false;
@@ -2212,28 +2229,28 @@
       ${state.projects.length > 1 ? `<select id="dproj" aria-label="Project">${state.projects.map(p => `<option value="${p.id}" ${p.id === state.project.id ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
       <div id="dmsg"></div>
       <form id="df" novalidate>
-        ${managers.length > 1 ? `<label for="d-mgr">मैनेजर <small>Manager</small></label><select id="d-mgr">${managers.map(m => `<option value="${m.id}" ${m.id === manager.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`
-          : `<p class="muted">मैनेजर: <b>${esc(manager.name)}</b></p>`}
-        <div class="card tot-box"><div class="muted">उपलब्ध फंड <small>Available Balance</small></div><div class="big-total" id="d-avail">…</div><div class="muted" id="d-note"></div></div>
-        <label for="d-date">तारीख <small>Date</small> *</label><input id="d-date" type="date" value="${today()}">
-        <div class="q">किन मज़दूरों को दिया? <small>Labour &amp; amounts</small> <small id="d-count"></small></div>
-        <input id="d-q" type="text" autocomplete="off" placeholder="🔍 मज़दूर खोजिए (Search Labour)">
-        <label class="lab-inact"><input type="checkbox" id="d-inact"> पुराने / काम बंद मज़दूर भी दिखाएँ <small>Show Inactive</small></label>
+        ${managers.length > 1 ? `<label for="d-mgr">${L('मैनेजर', 'Manager')}</label><select id="d-mgr">${managers.map(m => `<option value="${m.id}" ${m.id === manager.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select>`
+          : `<p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(manager.name)}</b></p>`}
+        <div class="card tot-box"><div class="muted">${L('उपलब्ध फंड', 'Available Balance')}</div><div class="big-total" id="d-avail">…</div><div class="muted" id="d-note"></div></div>
+        <label for="d-date">${L('तारीख', 'Date')} *</label><input id="d-date" type="date" value="${today()}">
+        <div class="q">${L('किन मज़दूरों को दिया?', 'Labour &amp; amounts')} <small id="d-count"></small></div>
+        <input id="d-q" type="text" autocomplete="off" placeholder="🔍 ${L('मज़दूर खोजिए', 'Search Labour')}">
+        <label class="lab-inact"><input type="checkbox" id="d-inact"> ${L('पुराने / काम बंद मज़दूर भी दिखाएँ', 'Show Inactive')}</label>
         <div id="dlist"></div>
-        <div class="card lab-total"><div class="row"><span>इस बार का कुल <small>Total This Distribution</small></span><span class="amount" id="d-total">₹ 0</span></div>
-          <div class="row"><span>उपलब्ध फंड <small>Available Balance</small></span><span class="amount" id="d-avail2">₹ 0</span></div>
-          <div class="row"><span>बाँटने के बाद बचेगा <small>Balance After Distribution</small></span><span class="amount" id="d-after">₹ 0</span></div></div>
+        <div class="card lab-total"><div class="row"><span>${L('इस बार का कुल', 'Total This Distribution')}</span><span class="amount" id="d-total">₹ 0</span></div>
+          <div class="row"><span>${L('उपलब्ध फंड', 'Available Balance')}</span><span class="amount" id="d-avail2">₹ 0</span></div>
+          <div class="row"><span>${L('बाँटने के बाद बचेगा', 'Balance After Distribution')}</span><span class="amount" id="d-after">₹ 0</span></div></div>
         <div class="field-error" id="d-warn"></div>
-        <label for="d-note-in">जानकारी <small>Remarks (optional)</small></label><input id="d-note-in" type="text" autocomplete="off">
-        <button class="btn green" type="submit" id="d-save">💾 बाँट दें <span class="sub">SAVE DISTRIBUTION</span></button>
-        <a class="btn line" href="#/fund">रद्द करें <span class="sub">Cancel</span></a>
+        <label for="d-note-in">${L('जानकारी', 'Remarks (optional)')}</label><input id="d-note-in" type="text" autocomplete="off">
+        <button class="btn green" type="submit" id="d-save">💾 ${L('बाँट दें', 'SAVE DISTRIBUTION')}</button>
+        <a class="btn line" href="#/fund">${L('रद्द करें', 'Cancel')}</a>
       </form>`;
     const $ = id => document.getElementById(id);
     const sum = () => [...picked].reduce((t, id) => t + toPaise(amt[id]), 0);
     const problem = () => {
-      if (!picked.size) return 'कम से कम एक मज़दूर चुनिए.';
-      if ([...picked].some(id => !(toPaise(amt[id]) > 0))) return 'चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).';
-      if (sum() > available) return 'कुल राशि उपलब्ध फंड से ज़्यादा है — घटाइए. (Total is more than the available balance.)';
+      if (!picked.size) return L('कम से कम एक मज़दूर चुनिए.', 'Please choose at least one labour.');
+      if ([...picked].some(id => !(toPaise(amt[id]) > 0))) return L('चुने हुए हर मज़दूर की राशि भरिए (0 से ज़्यादा).', 'Enter an amount greater than zero for every selected labour.');
+      if (sum() > available) return L('कुल राशि उपलब्ध फंड से ज़्यादा है — घटाइए.', 'Total is more than the available balance.');
       return '';
     };
     function update() {
@@ -2241,7 +2258,7 @@
       $('d-avail').textContent = money(available / 100); $('d-avail2').textContent = money(available / 100);
       $('d-total').textContent = money(total / 100); $('d-after').textContent = money(after / 100);
       $('d-after').classList.toggle('out', after < 0);
-      $('d-count').textContent = picked.size ? `(${picked.size} चुने)` : '';
+      $('d-count').textContent = picked.size ? `(${picked.size} ${L('चुने', 'selected')})` : '';
       $('d-warn').textContent = total > available ? problem() : '';
       $('d-save').disabled = saving || !!problem();
     }
@@ -2250,16 +2267,16 @@
       $('dlist').innerHTML = rows.length ? rows.map(l => `
         <div class="lab-row ${picked.has(l.id) ? 'on' : ''}" data-id="${l.id}">
           <label class="lab-pick"><input type="checkbox" class="lab-chk" ${picked.has(l.id) ? 'checked' : ''}>
-            <span class="lab-name">${esc(l.name)}${l.type ? ` <small>${esc(l.type)}</small>` : ''} ${l.is_active ? '' : '<span class="pill warn">काम बंद</span>'}</span></label>
-          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="${esc(l.name)} राशि" value="${esc(amt[l.id] || '')}"></span>
-        </div>`).join('') : '<div class="msg info">इस प्रोजेक्ट में कोई मज़दूर नहीं मिला. <small>No labour found.</small></div>';
+            <span class="lab-name">${esc(l.name)}${l.type ? ` <small>${esc(l.type)}</small>` : ''} ${l.is_active ? '' : `<span class="pill warn">${L('काम बंद', 'Inactive')}</span>`}</span></label>
+          <span class="lab-amt"><span>₹</span><input class="lab-a" type="text" inputmode="decimal" autocomplete="off" placeholder="0" aria-label="${esc(l.name)} ${L('राशि', 'amount')}" value="${esc(amt[l.id] || '')}"></span>
+        </div>`).join('') : `<div class="msg info">${L('इस प्रोजेक्ट में कोई मज़दूर नहीं मिला.', 'No labour found.')}</div>`;
     }
     async function loadBalance() {
       try {
         const r = await api(`manager-funds/summary/?project=${state.project.id}&manager=${manager.id}`);
         const row = (r.summary || [])[0];
         available = row ? toPaise(row.available_balance) : 0;
-        $('d-note').textContent = row ? '' : 'इस मैनेजर को अभी कोई फंड नहीं मिला. (No fund given yet.)';
+        $('d-note').textContent = row ? '' : L('इस मैनेजर को अभी कोई फंड नहीं मिला.', 'No fund given yet.');
       } catch (e) { available = 0; $('dmsg').innerHTML = errBox(fundErr(e)); }
       update();
     }
@@ -2287,7 +2304,7 @@
       if (saving) return;
       const bad = t => { $('dmsg').innerHTML = errBox(t); window.scrollTo(0, 0); };
       if (problem()) return bad(problem());
-      if (!$('d-date').value) return bad('कृपया तारीख चुनिए.');
+      if (!$('d-date').value) return bad(L('कृपया तारीख चुनिए.', 'Please choose a date.'));
       const lines = people.labour.filter(l => picked.has(l.id));
       saving = true; update(); $('dmsg').innerHTML = '';
       try {
@@ -2295,7 +2312,7 @@
           project: state.project.id, manager: manager.id, date: $('d-date').value, remarks: $('d-note-in').value.trim(),
           include_inactive: lines.some(l => !l.is_active),
           payments: lines.map(l => ({ labour: l.id, amount: fromPaise(toPaise(amt[l.id])) })) } });
-        fundFlash = `बँट गया: ${money(r.total)} — ${lines.length} मज़दूर, एक बैच में. (Distribution saved.)`;
+        fundFlash = L(`बँट गया: ${money(r.total)} — ${lines.length} मज़दूर, एक बैच में.`, `Distribution saved: ${money(r.total)} — ${lines.length} labour, one batch.`);
         fundManager = manager.id;
         location.hash = '#/fund';
       } catch (e) {

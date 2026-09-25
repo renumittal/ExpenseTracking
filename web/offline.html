@@ -1,20 +1,31 @@
 <!doctype html>
-<html lang="hi">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#1f4fa3">
-  <title>इंटरनेट चाहिए</title>
+  <title>No Internet</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="no-tabs">
   <main>
     <div class="empty">
       <div class="ico">📶</div>
-      <h1>इंटरनेट नहीं चल रहा है</h1>
-      <p>खर्च सेव करने के लिए इंटरनेट चाहिए।<br>कृपया इंटरनेट चालू करें, फिर नीचे का बटन दबाएँ.</p>
+      <h1 id="t"></h1>
+      <p id="p"></p>
     </div>
-    <button class="btn green big" type="button" onclick="location.reload()">🔄 दोबारा कोशिश करें <span class="sub">TRY AGAIN</span></button>
+    <button class="btn green big" type="button" onclick="location.reload()" id="b"></button>
   </main>
+  <script>
+    var hi;
+    try { hi = localStorage.getItem('lang') === 'hi'; } catch (e) { hi = false; }
+    document.documentElement.lang = hi ? 'hi' : 'en';
+    document.title = hi ? 'इंटरनेट चाहिए' : 'No Internet';
+    document.getElementById('t').textContent = hi ? 'इंटरनेट नहीं चल रहा है' : 'No internet connection';
+    document.getElementById('p').innerHTML = hi
+      ? 'खर्च सेव करने के लिए इंटरनेट चाहिए।<br>कृपया इंटरनेट चालू करें, फिर नीचे का बटन दबाएँ.'
+      : 'An internet connection is needed to save expenses.<br>Please turn on the internet, then tap the button below.';
+    document.getElementById('b').textContent = hi ? '🔄 दोबारा कोशिश करें' : '🔄 TRY AGAIN';
+  </script>
 </body>
 </html>
