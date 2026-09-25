@@ -125,8 +125,11 @@
   const NAV = [
     { id: 'home',        hash: '#/home',          icon: '🏠', hi: 'होम',       en: 'Dashboard',   perm: null, primary: true },
     { id: 'add',         hash: '#/add',           icon: '➕', hi: 'खर्च डालें', en: 'Add Expense', perm: canEnterAny, primary: true },
-    { id: 'list',        hash: '#/list',          icon: '📋', hi: 'खर्च देखें', en: 'Expenses',    perm: 'canViewExpenses', primary: true },
-    { id: 'reports',     hash: '#/reports',       icon: '📊', hi: 'हिसाब',     en: 'Reports',     perm: 'canViewReports', primary: true },
+    // Labels deliberately distinct from each other (and from the screen's own H1, kept in sync in
+    // app.js) so a non-technical user doesn't read "list" and "totals" as the same feature: List is
+    // every single entry one by one; Total Expense is the grand totals / category breakup.
+    { id: 'list',        hash: '#/list',          icon: '📋', hi: 'खर्च की लिस्ट', en: 'Expense List', perm: 'canViewExpenses', primary: true },
+    { id: 'reports',     hash: '#/reports',       icon: '📊', hi: 'कुल खर्च',   en: 'Total Expense', perm: 'canViewReports', primary: true },
     { id: 'project',     hash: '#/project',       icon: '🏗️', hi: 'प्रोजेक्ट',  en: 'Projects',    perm: 'canViewProjects' },
     { id: 'labour',      hash: '#/report/LABOUR', icon: '👷', hi: 'मज़दूर',    en: 'Labour',      perm: 'canViewLabour' },
     { id: 'suppliers',   hash: '#/report/SUPPLIER', icon: '🚚', hi: 'सप्लायर', en: 'Suppliers',   perm: 'canViewSuppliers' },

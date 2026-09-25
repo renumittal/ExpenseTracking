@@ -5,7 +5,7 @@
 
   // Shown in the user menu, and bumped whenever the app ships a user-visible change --
   // bump web/sw.js's CACHE version in the same commit so the install and the label agree.
-  const APP_VERSION = 'v10';
+  const APP_VERSION = 'v11';
 
   // ---------- words the user sees ----------
   // L(hi, en) shows only ONE language at a time, picked by the current language switcher --
@@ -408,10 +408,10 @@
       ${proj ? `<p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(proj.name)}</b></p>` : noProject()}
       <div class="home-grid">
         ${canAdd() ? `<a class="btn green big" href="#/add"><span class="ico">➕</span><span>${L('खर्च डालें', 'Add Expense')}</span></a>` : ''}
-        ${can('canViewExpenses') ? `<a class="btn big" href="#/list"><span class="ico">📋</span><span>${L('खर्च देखें', 'View Expenses')}</span></a>` : ''}
+        ${can('canViewExpenses') ? `<a class="btn big" href="#/list"><span class="ico">📋</span><span>${L('खर्च की लिस्ट', 'Expense List')}</span></a>` : ''}
         ${can('canViewProjects') ? `<a class="btn big" href="#/project"><span class="ico">🏠</span><span>${L('मेरा प्रोजेक्ट', 'My Project')}</span></a>` : ''}
         ${can('canViewManagerFund') ? `<a class="btn big" href="#/fund"><span class="ico">💰</span><span>${L('मैनेजर फंड', 'Manager Fund')}</span></a>` : ''}
-        ${can('canViewReports') ? `<a class="btn big" href="#/reports"><span class="ico">📊</span><span>${L('हिसाब देखें', 'Total Expense')}</span></a>` : ''}
+        ${can('canViewReports') ? `<a class="btn big" href="#/reports"><span class="ico">📊</span><span>${L('कुल खर्च', 'Total Expense')}</span></a>` : ''}
       </div>`;
   }
 
@@ -1106,7 +1106,7 @@
       <div class="success"><div class="tick">✅</div><h1>${MSG.saved}</h1>
         ${info ? `<div class="card"><div class="amount">${money(info.amount)}</div><div class="muted">${esc(info.who)}</div></div>` : ''}</div>
       <a class="btn green big" href="#/add">➕ ${L('एक और खर्च डालें', 'Add Another')}</a>
-      ${can('canViewExpenses') ? `<a class="btn line" href="#/list">📋 ${L('खर्च देखें', 'View Expenses')}</a>` : ''}
+      ${can('canViewExpenses') ? `<a class="btn line" href="#/list">📋 ${L('खर्च की लिस्ट', 'Expense List')}</a>` : ''}
       <a class="btn line" href="#/home">🏠 ${L('होम पर जाएँ', 'Home')}</a>`;
   }
 
@@ -1254,7 +1254,8 @@
       const total = shown.reduce((s, r) => s + Number(r.amount), 0);
       const chip = (key, label) => `<button type="button" class="choice" data-c="${key}" aria-pressed="${listState.cat === key}">${label}</button>`;
       $view.innerHTML = `
-        <h1>📋 ${L('खर्च देखें', 'View Expenses')}</h1>
+        <h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>
+        <p class="muted">${L('हर खर्च अलग-अलग यहाँ दिखता है', 'Every expense, one by one')}</p>
         ${personNote}
         <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
         <div class="card"><div class="row"><span>${L('कुल खर्च', 'Total')}</span><span class="amount">${money(total)}</span></div></div>` +
@@ -1327,7 +1328,8 @@
     const pct = v => (total > 0 ? Math.round((Number(v) / total) * 100) : 0);
 
     $view.innerHTML = `
-      <h1>📊 ${L('हिसाब देखें', 'Total Expense')}</h1>
+      <h1>📊 ${L('कुल खर्च', 'Total Expense')}</h1>
+      <p class="muted">${L('जोड़ और हिसाब -- किस पर कितना खर्च हुआ', 'Totals and breakdown -- how much went where')}</p>
       <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${esc(state.project.name)}</b></p>
       <div class="card"><div class="muted">${L('कुल खर्च', 'Total Expense')}</div><div class="big-total">${money(total)}</div></div>
       <h2>${L('किस पर कितना खर्च हुआ', 'Spend by category')}</h2>

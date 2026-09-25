@@ -2,7 +2,7 @@
    It deliberately does NOT make the app work offline: expenses are only saved on the
    server, so without internet we show a clear "internet chahiye" page instead of
    pretending. Data (API) requests are never cached or intercepted. */
-const CACHE = 'expense-shell-v10';
+const CACHE = 'expense-shell-v11';
 const SHELL = ['./', 'index.html', 'offline.html', 'style.css', 'app.js', 'authz.js', 'i18n.js', 'config.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];
 
