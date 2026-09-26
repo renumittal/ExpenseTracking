@@ -298,6 +298,11 @@
   // than a bare Home.
   const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users', '#/managers': 'managers',
     '#/report/LABOUR': 'labour', '#/report/SUPPLIER': 'suppliers', '#/report/CONTRACTOR': 'contractors' };
+  // hash -> its own parent hash, for hashes more than one level below Home (e.g. a specific report is
+  // itself a child of Reports) -- lets the breadcrumb walk the full ancestor chain instead of showing
+  // only the immediate parent, so "Home > Total Expense > Labour > <person>" doesn't collapse to
+  // "Home > Labour > <person>" when BACK points straight at the Labour report.
+  const HASH_PARENT = { '#/report/LABOUR': '#/reports', '#/report/SUPPLIER': '#/reports', '#/report/CONTRACTOR': '#/reports' };
 
   // ---------- chrome (back button, breadcrumb, tabs) ----------
   // `currentLabel`, when given, replaces the generic per-tab breadcrumb label for just this render --
@@ -351,9 +356,13 @@
       backBtn.setAttribute('href', back);
       backBtn.innerHTML = `← ${L('वापस', 'BACK')}`;
 
-      const backTab = HASH_TAB[back];
       const trail = [{ hash: '#/home', label: TAB_LABEL.home() }];
-      if (backTab && backTab !== 'home' && backTab !== tab) trail.push({ hash: back, label: TAB_LABEL[backTab]() });
+      const chain = [];                                   // back, and everything above it, nearest-first
+      for (let h = back; h && h !== '#/home'; h = HASH_PARENT[h]) chain.unshift(h);
+      chain.forEach(hash => {
+        const t = HASH_TAB[hash];
+        if (t && t !== 'home' && t !== tab) trail.push({ hash, label: TAB_LABEL[t] ? TAB_LABEL[t]() : hash });
+      });
       const current = currentLabel || (TAB_LABEL[tab] ? TAB_LABEL[tab]() : '');
       crumb.hidden = !current;
       if (current) {
@@ -1516,7 +1525,7 @@
     if (!seen.has(listState.cat)) listState.cat = '';
 
     const personKey = ['labour', 'supplier', 'contractor', 'contractor_contract'].find(k => params.get(k));
-    const personNote = personKey ? `<div class="msg info">${L('एक व्यक्ति का पूरा हिसाब', 'Showing one person only')} · <a href="#/list">${L('सब देखें', 'Show all')}</a></div>` : '';
+    const showAllLink = personKey ? `<a href="#/list">${L('सब देखें', 'Show all')}</a>` : '';
     // BACK/breadcrumb: when this is a specific person's history, go back to the report that actually
     // linked here (not a fixed "#/home") and name that person as the current crumb, instead of the
     // generic "Expense List" -- see chrome()'s currentLabel param.
@@ -1578,8 +1587,7 @@
         return `<div class="list-day"><div class="row list-day-head"><span>${niceDate(d)}</span><span class="amount">${money(dayTotal)}</span></div>${list.map(rowCard).join('')}</div>`;
       };
       $view.innerHTML = `
-        <h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>
-        ${personNote}
+        <div class="row"><h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>${showAllLink}</div>
         <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
         ${personKeyInit ? '' : `<div class="chips" id="list-range-chips">${rangeChip('week', I18n.t('thisWeek'))}${rangeChip('month', I18n.t('thisMonth'))}${rangeChip('custom', I18n.t('customRange'))}</div>
         ${listState.range === 'custom' ? `<div class="step" id="list-custom">
