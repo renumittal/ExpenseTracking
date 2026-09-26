@@ -76,12 +76,12 @@ def can_give_manager_fund(user, project):
 
 
 def can_distribute_manager_fund(user, project, manager):
-    """A manager distributes only their own fund on a project they are assigned to (admin: any).
+    """A manager's fund belongs to that manager alone: only the manager themself may distribute it,
+    never an owner or Super Admin on their behalf (a payment made by anyone else is a direct labour
+    payment instead -- see LabourPaymentViewSet -- so accounting always shows who really paid).
     Project-aware: respects a per-project override on CAN_DISTRIBUTE_MANAGER_FUND."""
     if not services.has_perm(user, CAN_DISTRIBUTE_MANAGER_FUND, project):
         return False
-    if is_admin(user):
-        return True
     return manager.user_id == user.id and services.users_with_role(project, 'MANAGER').filter(pk=user.id).exists()
 
 

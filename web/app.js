@@ -2573,7 +2573,13 @@
     chrome('add', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
     loading();
-    const fundBacked = can('canDistributeManagerFund');
+    // A manager's fund belongs to that manager alone -- only the manager themself may distribute it.
+    // Anyone else (Owner, Super Admin) paying labour is always a direct, owner-attributed payment, even
+    // though Super Admin also holds canDistributeManagerFund (needed for other screens, e.g. viewing
+    // every manager's fund) -- that permission must never let them spend out of a manager's balance on
+    // the manager's behalf.
+    const own = state.me.manager_id;
+    const fundBacked = !!own && can('canDistributeManagerFund');
     let people;
     try { people = await api(`projects/${state.project.id}/people/`); }
     catch (e) { $view.innerHTML = errBox(fundErr(e)); return; }
@@ -2586,9 +2592,8 @@
       ? `<a class="btn line" href="#/fund">← ${L('फंड देखें', 'Back to Manager Fund')}</a>`
       : `<a class="btn line" href="#/add">← ${L('वापस', 'Back')}</a>`;
 
-    // Fund-backed: which manager (a manager only ever pays their own fund; a Super Admin picks one).
-    const own = state.me.manager_id;
-    const managers = fundBacked ? (own ? people.managers.filter(m => m.id === own) : people.managers) : [];
+    // Fund-backed: always the logged-in manager's own fund (fundBacked implies `own` is set).
+    const managers = fundBacked ? people.managers.filter(m => m.id === own) : [];
     if (fundBacked && !managers.length) { $view.innerHTML = `${intro}<div class="msg info">${L('कोई मैनेजर नहीं मिला.', 'No manager found for this project.')}</div>${back}`; return; }
     let manager = fundBacked ? (managers.find(m => m.id === fundManager) || managers[0]) : null;
 
