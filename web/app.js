@@ -2442,8 +2442,9 @@
       state.project = state.projects.find(p => p.id === Number(b.dataset.p)); store.set('projectId', state.project.id); state.names = null;
       fundAll = false; fundManager = Number(b.dataset.m); screenFund(); window.scrollTo(0, 0);
     });
-    const actions = `${can('canGiveManagerFund') ? `<a class="btn green" href="#/givefund">➕ ${L('फंड दें', 'Give Fund')}</a>` : ''}
-      ${can('canDistributeManagerFund') && stmts.length ? `<a class="btn" href="#/distribute">📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</a>` : ''}`;
+    const giveFundBtn = can('canGiveManagerFund') ? `<a class="btn green" href="#/givefund">➕ ${L('फंड दें', 'Give Fund')}</a>` : '';
+    const distributeBtn = can('canDistributeManagerFund') && stmts.length ? `<a class="btn" href="#/distribute">📤 ${L('मज़दूरों को दें', 'Distribute to Labour')}</a>` : '';
+    const actions = `${giveFundBtn}${distributeBtn}`;
     const head = `<h1>💰 ${L('मैनेजर फंड', 'Manager Fund')}</h1>
       <p class="muted">${L('प्रोजेक्ट', 'Project')}: <b>${fundAll ? L('सभी प्रोजेक्ट', 'All projects') : esc(state.project.name)}</b></p>${projectPicker}
       ${flash ? `<div class="msg ok" role="status">${esc(flash)}</div>` : ''}`;
@@ -2474,19 +2475,21 @@
     const pill = st => `<span class="pill ${st === 'ACTIVE' ? '' : 'warn'}">${st === 'ACTIVE' ? L('चालू', 'Active') : L('रद्द — गिना नहीं गया', 'Cancelled — not counted')}</span>`;
     const draw = () => {
       const p = cur.position, bal = Number(p.available_balance);
+      const summary = !state.me.manager_id;
       $view.innerHTML = `${head}
-        ${!state.me.manager_id ? `<h2>${L('मैनेजर', 'Manager-wise Summary')}</h2>${fundTable(stmts)}` : ''}
-        <p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(p.manager_name)}</b></p>
+        ${summary ? `<div class="h2-row"><h2>${L('मैनेजर', 'Manager-wise Summary')}</h2>${giveFundBtn}</div>${fundTable(stmts)}
+        <p class="muted">${L('मैनेजर', 'Manager')}: <b>${esc(p.manager_name)}</b></p>` : `
         <div class="tot-grid">
           <div class="card tot-box"><div class="muted">${L('कुल फंड मिला', 'Total Fund Received')}</div><div class="big-total">${money(p.total_received)}</div><div class="muted">${L('मालिक → मैनेजर', 'Owner → Manager')}</div></div>
           <div class="card tot-box"><div class="muted">${L('कुल बाँटा गया', 'Total Distributed')}</div><div class="big-total">${money(p.total_distributed)}</div><div class="muted">${L('मैनेजर → मज़दूर', 'Manager → Labour')}</div></div>
           <div class="card tot-box ${bal > 0 ? 'ok' : ''}"><div class="muted">${L('बचा हुआ फंड', 'Available Balance')}</div><div class="big-total">${money(p.available_balance)}</div><div class="muted">${L('= मिला − बाँटा', 'Received − active distribution')}</div></div>
         </div>
         ${p.total_received > 0 && bal === 0 ? `<div class="msg info">${L('पूरा फंड बाँटा जा चुका है — अब कोई बचत नहीं.', 'No balance left.')}</div>` : ''}
-        ${actions}
+        ${giveFundBtn}`}
+        ${distributeBtn}
         <h2>📥 ${L('फंड मिला', 'Fund Received History')}</h2>` +
         (cur.funds.map(f => `<div class="card item"><div class="row"><span class="who">${money(f.amount)}</span><span class="meta">${shortDate(f.date)}</span></div>
-          <div class="meta">${L('मालिक', 'Owner')}: <b>${esc(f.given_by_owner_name)}</b> · ${esc(modeName(f.payment_mode))}</div>
+          <div class="meta">${L('मैनेजर', 'Manager')}: <b>${esc(p.manager_name)}</b> · ${L('मालिक', 'Owner')}: <b>${esc(f.given_by_owner_name)}</b> · ${esc(modeName(f.payment_mode))}</div>
           ${f.remarks ? `<div class="note">📝 ${esc(f.remarks)}</div>` : ''}</div>`).join('') || `<div class="empty">${L('अभी कोई फंड नहीं मिला.', 'No fund received yet.')}</div>`) +
         `<h2>📤 ${L('मज़दूरों को दिया', 'Labour Distribution History')}</h2>` +
         (cur.distributions.slice().reverse().map(d => `<div class="card item ${d.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${esc(d.labour_name)}</span><span class="amount">${money(d.amount)}</span></div>

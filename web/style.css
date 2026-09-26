@@ -219,6 +219,11 @@ input:focus, textarea:focus, select:focus { border-color: var(--blue); outline: 
 .item.cancelled .amount, .item.cancelled .who { text-decoration: line-through; opacity: .65; }
 @media (min-width: 720px) { .tot-grid { grid-template-columns: repeat(3, 1fr); } .tot-box .big-total { font-size: 1.6rem; } }
 
+/* Heading row with an inline action button, e.g. "Manager-wise Summary" + Give Fund */
+.h2-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 24px 0 10px; }
+.h2-row h2 { margin: 0; }
+.h2-row .btn { width: auto; min-height: 40px; margin: 0; padding: 6px 14px; font-size: .92rem; white-space: nowrap; }
+
 /* Manager-wise fund table (desktop: columns; phone: each row becomes a labelled card) */
 .fund-table { margin: 8px 0; overflow: hidden; background: var(--card); border: 2px solid var(--line); border-radius: var(--radius); }
 .fund-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr 1fr; gap: 6px; align-items: center; width: 100%; padding: 10px 12px; font: inherit; font-size: .9rem; text-align: left; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--line); }
