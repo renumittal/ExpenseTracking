@@ -296,10 +296,14 @@
   // hash (as passed for `back`) -> the tab id that owns that hash, so the breadcrumb can show a
   // middle segment (e.g. Home > Total Expense > Labour) when `back` points at a different screen
   // than a bare Home.
-  const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users', '#/managers': 'managers' };
+  const HASH_TAB = { '#/home': 'home', '#/reports': 'reports', '#/fund': 'fund', '#/settings': 'settings', '#/users': 'users', '#/managers': 'managers',
+    '#/report/LABOUR': 'labour', '#/report/SUPPLIER': 'suppliers', '#/report/CONTRACTOR': 'contractors' };
 
   // ---------- chrome (back button, breadcrumb, tabs) ----------
-  function chrome(tab, back) {
+  // `currentLabel`, when given, replaces the generic per-tab breadcrumb label for just this render --
+  // e.g. Expense List filtered to one person shows that person's name as the final crumb instead of
+  // the generic "Expense List".
+  function chrome(tab, back, currentLabel) {
     const loggedIn = !!state.token && tab !== 'login';
     $view.onclick = null;   // a screen may attach a delegated click handler
     renderUserbar(loggedIn);
@@ -350,7 +354,7 @@
       const backTab = HASH_TAB[back];
       const trail = [{ hash: '#/home', label: TAB_LABEL.home() }];
       if (backTab && backTab !== 'home' && backTab !== tab) trail.push({ hash: back, label: TAB_LABEL[backTab]() });
-      const current = TAB_LABEL[tab] ? TAB_LABEL[tab]() : '';
+      const current = currentLabel || (TAB_LABEL[tab] ? TAB_LABEL[tab]() : '');
       crumb.hidden = !current;
       if (current) {
         crumb.innerHTML = trail.map(c => `<a href="${c.hash}">${esc(c.label)}</a><span class="crumb-sep">›</span>`).join('')
@@ -1486,6 +1490,11 @@
     };
   }
 
+  // Which report screen ("View Expenses" from a Labour/Supplier/Contractor report row) sent us here,
+  // keyed by the same query param screenReportOne's link carries -- so BACK returns to that exact
+  // report instead of a fixed generic parent, and the breadcrumb can name the specific report tab.
+  const LIST_BACK_BY_PERSON_KEY = { labour: '#/report/LABOUR', supplier: '#/report/SUPPLIER', contractor_contract: '#/report/CONTRACTOR' };
+
   async function screenList(params) {
     chrome('list', '#/home');
     if (!state.project) { $view.innerHTML = noProject(); return; }
@@ -1508,6 +1517,15 @@
 
     const personKey = ['labour', 'supplier', 'contractor', 'contractor_contract'].find(k => params.get(k));
     const personNote = personKey ? `<div class="msg info">${L('एक व्यक्ति का पूरा हिसाब', 'Showing one person only')} · <a href="#/list">${L('सब देखें', 'Show all')}</a></div>` : '';
+    // BACK/breadcrumb: when this is a specific person's history, go back to the report that actually
+    // linked here (not a fixed "#/home") and name that person as the current crumb, instead of the
+    // generic "Expense List" -- see chrome()'s currentLabel param.
+    if (personKey) {
+      const personName = personKey === 'labour' ? (names.labour.find(x => x.id === Number(params.get('labour'))) || {}).name
+        : personKey === 'supplier' ? (names.suppliers.find(x => x.id === Number(params.get('supplier'))) || {}).name
+        : (names.contracts.find(x => x.id === Number(params.get('contractor_contract'))) || {}).contractor_name;
+      chrome('list', LIST_BACK_BY_PERSON_KEY[personKey] || '#/reports', personName || TAB_LABEL.list());
+    }
 
     const nameOf = r => {
       if (r.labour) return (names.labour.find(x => x.id === r.labour) || {}).name;
@@ -1561,7 +1579,6 @@
       };
       $view.innerHTML = `
         <h1>📋 ${L('खर्च की लिस्ट', 'Expense List')}</h1>
-        <p class="muted">${L('हर खर्च अलग-अलग यहाँ दिखता है', 'Every expense, one by one')}</p>
         ${personNote}
         <div class="chips">${chip('', L('सब', 'All'))}${viewableCats().map(c => chip(c.key, `${c.icon} ${catLabel(c)}`)).join('')}</div>
         ${personKeyInit ? '' : `<div class="chips" id="list-range-chips">${rangeChip('week', I18n.t('thisWeek'))}${rangeChip('month', I18n.t('thisMonth'))}${rangeChip('custom', I18n.t('customRange'))}</div>
