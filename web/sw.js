@@ -2,6 +2,9 @@
    It deliberately does NOT make the app work offline: expenses are only saved on the
    server, so without internet we show a clear "internet chahiye" page instead of
    pretending. Data (API) requests are never cached or intercepted. */
+// The deploy workflow (.github/workflows/pages.yml) overwrites this with the commit SHA on every
+// publish, so every deploy is a distinct version an already-open tab can detect and offer to reload
+// for. This literal only matters for local/offline testing.
 const CACHE = 'expense-shell-v12';
 const SHELL = ['./', 'index.html', 'offline.html', 'style.css', 'app.js', 'authz.js', 'i18n.js', 'config.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'icons/favicon-32.png'];

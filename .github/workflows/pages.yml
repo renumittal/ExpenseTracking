@@ -26,6 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+      # sw.js's own CACHE version is what makes an already-open app notice a new deploy exists (it's
+      # what the browser diffs to decide "there's an update, show the reload banner") -- app.js/style.css
+      # changing on their own, without this, is invisible to a tab that's already loaded and just
+      # navigating by hash. Stamp a version tied to this commit so every deploy is detected, without
+      # anyone having to remember to bump it by hand.
+      - run: sed -i "s/const CACHE = '[^']*'/const CACHE = 'expense-shell-${GITHUB_SHA::12}'/" web/sw.js
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web
