@@ -286,13 +286,33 @@ def statement(project, manager):
         'id': d.id, 'date': d.date, 'labour_id': d.labour_id, 'labour_name': d.labour.name, 'amount': d.amount,
         'status': 'ACTIVE' if d.is_active else 'CANCELLED', 'manager_fund_id': d.manager_fund_id,
         'payment_batch': str(d.expense_transaction.payment_batch) if d.expense_transaction and d.expense_transaction.payment_batch else None,
-        'remarks': d.remarks, 'created_by': d.created_by.get_username() if d.created_by else None,
+        'remarks': d.remarks, 'created_by': d.created_by.get_username() if d.created_by else None, 'source': 'DISTRIBUTION',
     } for d in dists]
+
+    # A manager can also pay labour directly (LabourPaymentViewSet, the Add Expense -> Labour screen)
+    # without ever creating a ManagerLabourDistribution row -- see _manager_direct_labour_expenses().
+    # Both are real money out of this manager's fund and must appear in their history/ledger the same
+    # way manager_spent() already counts both towards the balance above. include all statuses (not
+    # just ACTIVE) so a cancelled direct payment shows up in history exactly like a cancelled
+    # distribution does. manager_fund_id is None: a direct payment isn't drawn from one specific lot.
+    directs = list(
+        ExpenseTransaction.objects.filter(
+            project=project, expense_category=ExpenseCategory.LABOUR,
+            created_by=manager.user_id, manager_labour_distribution__isnull=True,
+        ).select_related('labour', 'created_by').order_by('expense_date', 'id'))
+    dist_rows += [{
+        'id': e.id, 'date': e.expense_date, 'labour_id': e.labour_id, 'labour_name': e.labour.name if e.labour_id else '',
+        'amount': e.amount, 'status': e.status, 'manager_fund_id': None,
+        'payment_batch': str(e.payment_batch) if e.payment_batch else None,
+        'remarks': e.remarks, 'created_by': e.created_by.get_username() if e.created_by else None, 'source': 'DIRECT',
+    } for e in directs]
+    dist_rows.sort(key=lambda r: (r['date'], r['id']))
 
     entries = [{'kind': 'FUND', 'order': 0, 'id': r['id'], 'date': r['date'], 'amount': r['amount'],
                 'label': f"Fund from {r['given_by_owner_name']}", 'status': r['status']} for r in fund_rows]
     entries += [{'kind': 'DISTRIBUTION', 'order': 1, 'id': r['id'], 'date': r['date'], 'amount': r['amount'],
-                 'label': f"To {r['labour_name']}", 'status': r['status']} for r in dist_rows]
+                 'label': f"To {r['labour_name']}" + ('' if r['source'] == 'DISTRIBUTION' else ' (direct)'),
+                 'status': r['status']} for r in dist_rows]
     entries.sort(key=lambda e: (e['date'], e['order'], e['id']))
     running = ZERO
     for e in entries:                       # cancelled funds/distributions are listed but do not move the balance

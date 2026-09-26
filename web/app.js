@@ -2465,7 +2465,7 @@
           ${f.remarks ? `<div class="note">📝 ${esc(f.remarks)}</div>` : ''}</div>`).join('') || `<div class="empty">${L('अभी कोई फंड नहीं मिला.', 'No fund received yet.')}</div>`) +
         `<h2>📤 ${L('मज़दूरों को दिया', 'Labour Distribution History')}</h2>` +
         (cur.distributions.slice().reverse().map(d => `<div class="card item ${d.status === 'ACTIVE' ? '' : 'cancelled'}"><div class="row"><span class="who">${esc(d.labour_name)}</span><span class="amount">${money(d.amount)}</span></div>
-          <div class="meta">${shortDate(d.date)} · ${L('फंड', 'Fund')} #${d.manager_fund_id} (${esc(owners.get(d.manager_fund_id) || '—')}) ${pill(d.status)}</div>
+          <div class="meta">${shortDate(d.date)} · ${d.manager_fund_id != null ? `${L('फंड', 'Fund')} #${d.manager_fund_id} (${esc(owners.get(d.manager_fund_id) || '—')})` : L('सीधा भुगतान (Add Expense से)', 'Direct payment (via Add Expense)')} ${pill(d.status)}</div>
           ${d.remarks ? `<div class="note">📝 ${esc(d.remarks)}</div>` : ''}</div>`).join('') || `<div class="empty">${L('अभी किसी मज़दूर को नहीं दिया.', 'No distribution to labour yet.')}</div>`) +
         `<h2>🧾 ${L('हिसाब-किताब', 'Running Statement')}</h2>
         <p class="muted">${L('📥 फंड = मैनेजर को मिला पैसा · 📤 = मैनेजर ने मज़दूर को दिया · रद्द किया हुआ जोड़ा नहीं जाता.', '📥 Fund = money received by manager · 📤 = manager paid to labour · cancelled entries are not counted.')}</p>` +
